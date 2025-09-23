@@ -1,246 +1,140 @@
 // middleware/authMiddleware.js
 const jwt = require("jsonwebtoken");
-const Guru = require("../models/Guru");
-const Siswa = require("../models/Siswa");
-const SuperAdmin = require("../models/SuperAdmin");
+const User = require("../models/User"); // Diubah ke User
 
-// Middleware untuk otentikasi JWT
 const authMiddleware = (req, res, next) => {
   const token = req.header("Authorization");
-
   if (!token) {
     return res
       .status(401)
       .json({ message: "Akses ditolak: Token tidak ditemukan." });
   }
-
   try {
     const tokenParts = token.split(" ");
-
     if (tokenParts.length !== 2 || tokenParts[0] !== "Bearer") {
-      return res.status(400).json({
-        message: "Format token tidak valid. Gunakan format 'Bearer <token>'.",
-      });
+      return res
+        .status(400)
+        .json({
+          message: "Format token tidak valid. Gunakan format 'Bearer <token>'.",
+        });
     }
-
     const decoded = jwt.verify(tokenParts[1], process.env.JWT_SECRET);
-    console.log("✅ Token decoded:", decoded);
-
-    req.user = {
-      id: decoded.id,
-      role: decoded.role,
-    };
-
+    req.user = { id: decoded.id, role: decoded.role };
     next();
   } catch (error) {
-    console.error("❌ Token verification error:", error);
     return res
       .status(401)
       .json({ message: "Token tidak valid atau sudah kedaluwarsa." });
   }
 };
 
-// Middleware untuk Super Admin only
 const verifySuperAdmin = (req, res, next) => {
-  if (!req.user) {
-    return res
-      .status(401)
-      .json({ message: "Unauthorized: Token tidak tersedia." });
-  }
-
   if (req.user.role !== "super_admin") {
-    return res.status(403).json({
-      message:
-        "Akses ditolak: Hanya Super Admin yang dapat mengakses fitur ini.",
-    });
+    return res
+      .status(403)
+      .json({
+        message:
+          "Akses ditolak: Hanya Super Admin yang dapat mengakses fitur ini.",
+      });
   }
-
   next();
 };
 
-// Middleware untuk Guru only
 const verifyGuru = (req, res, next) => {
-  if (!req.user) {
-    return res
-      .status(401)
-      .json({ message: "Unauthorized: Token tidak tersedia." });
-  }
-
   if (req.user.role !== "guru") {
-    return res.status(403).json({
-      message: "Akses ditolak: Hanya Guru yang dapat mengakses fitur ini.",
-    });
+    return res
+      .status(403)
+      .json({
+        message: "Akses ditolak: Hanya Guru yang dapat mengakses fitur ini.",
+      });
   }
-
   next();
 };
 
-// Middleware untuk Siswa only
 const verifySiswa = (req, res, next) => {
-  if (!req.user) {
-    return res
-      .status(401)
-      .json({ message: "Unauthorized: Token tidak tersedia." });
-  }
-
   if (req.user.role !== "siswa") {
-    return res.status(403).json({
-      message: "Akses ditolak: Hanya Siswa yang dapat mengakses fitur ini.",
-    });
+    return res
+      .status(403)
+      .json({
+        message: "Akses ditolak: Hanya Siswa yang dapat mengakses fitur ini.",
+      });
   }
-
   next();
 };
 
-// Middleware untuk Admin atau Guru (gabungan)
 const verifyAdminOrGuru = (req, res, next) => {
-  if (!req.user) {
-    return res
-      .status(401)
-      .json({ message: "Unauthorized: Token tidak tersedia." });
-  }
-
   if (!["super_admin", "guru"].includes(req.user.role)) {
-    return res.status(403).json({
-      message:
-        "Akses ditolak: Hanya Super Admin atau Guru yang dapat mengakses fitur ini.",
-    });
-  }
-
-  next();
-};
-
-// Middleware untuk semua role kecuali guest
-const verifyAnyUser = (req, res, next) => {
-  if (!req.user) {
     return res
-      .status(401)
-      .json({ message: "Unauthorized: Token tidak tersedia." });
+      .status(403)
+      .json({
+        message:
+          "Akses ditolak: Hanya Super Admin atau Guru yang dapat mengakses fitur ini.",
+      });
   }
-
-  if (!["super_admin", "guru", "siswa"].includes(req.user.role)) {
-    return res.status(403).json({
-      message: "Akses ditolak: Role tidak valid.",
-    });
-  }
-
   next();
 };
 
-// Middleware untuk cek apakah user masih aktif
+const verifyAnyUser = (req, res, next) => {
+  if (!["super_admin", "guru", "siswa"].includes(req.user.role)) {
+    return res
+      .status(403)
+      .json({ message: "Akses ditolak: Role tidak valid." });
+  }
+  next();
+};
+
 const checkUserActive = async (req, res, next) => {
   try {
-    if (!req.user || !req.user.id) {
-      return res
-        .status(401)
-        .json({ message: "User ID tidak ditemukan dalam token." });
-    }
-
-    let user;
-    if (req.user.role === "super_admin") {
-      user = await SuperAdmin.findById(req.user.id);
-    } else if (req.user.role === "guru") {
-      user = await Guru.findById(req.user.id);
-    } else {
-      user = await Siswa.findById(req.user.id);
-    }
-
+    const user = await User.findById(req.user.id); // Disederhanakan
     if (!user) {
       return res.status(404).json({ message: "User tidak ditemukan." });
     }
-
     if (!user.isActive) {
-      return res.status(403).json({
-        message: "Akun Anda telah dinonaktifkan. Hubungi administrator.",
-      });
+      return res
+        .status(403)
+        .json({
+          message: "Akun Anda telah dinonaktifkan. Hubungi administrator.",
+        });
     }
-
-    // Tambahkan data user lengkap ke request
     req.userDetail = user;
     next();
   } catch (error) {
-    console.error("❌ Error checking user status:", error);
     return res.status(500).json({ message: "Error checking user status." });
   }
 };
 
-// Middleware untuk cek kepemilikan resource
 const checkOwnership = (model) => {
   return async (req, res, next) => {
     try {
       const resourceId = req.params.id;
       const userId = req.user.id;
-      const userRole = req.user.role;
-
-      // Super admin bisa akses semua
-      if (userRole === "super_admin") {
-        return next();
-      }
-
+      if (req.user.role === "super_admin") return next();
       const resource = await model.findById(resourceId);
-      if (!resource) {
+      if (!resource)
         return res.status(404).json({ message: "Resource tidak ditemukan." });
-      }
-
-      // Cek kepemilikan berdasarkan field yang ada
       const ownerFields = ["user", "siswa", "guru", "createdBy", "dibuatOleh"];
       let isOwner = false;
-
       for (let field of ownerFields) {
         if (resource[field] && resource[field].toString() === userId) {
           isOwner = true;
           break;
         }
       }
-
       if (!isOwner) {
-        return res.status(403).json({
-          message:
-            "Akses ditolak: Anda tidak memiliki hak untuk mengakses resource ini.",
-        });
+        return res
+          .status(403)
+          .json({
+            message:
+              "Akses ditolak: Anda tidak memiliki hak untuk mengakses resource ini.",
+          });
       }
-
       next();
     } catch (error) {
-      console.error("❌ Error checking ownership:", error);
       return res
         .status(500)
         .json({ message: "Error checking resource ownership." });
     }
   };
-};
-
-// Middleware untuk validasi mata pelajaran guru
-const validateGuruMataPelajaran = async (req, res, next) => {
-  try {
-    const { mataPelajaran } = req.body;
-    const userId = req.user.id;
-
-    if (req.user.role !== "guru") {
-      return next(); // Skip jika bukan guru
-    }
-
-    const guru = await Guru.findById(userId).populate("mataPelajaran");
-
-    if (!guru) {
-      return res.status(404).json({ message: "Guru tidak ditemukan." });
-    }
-
-    const mataPelajaranIds = guru.mataPelajaran.map((mp) => mp._id.toString());
-
-    if (!mataPelajaranIds.includes(mataPelajaran)) {
-      return res.status(403).json({
-        message: "Akses ditolak: Anda tidak mengampu mata pelajaran ini.",
-      });
-    }
-
-    next();
-  } catch (error) {
-    console.error("❌ Error validating guru mata pelajaran:", error);
-    return res
-      .status(500)
-      .json({ message: "Error validating mata pelajaran." });
-  }
 };
 
 module.exports = {
@@ -252,5 +146,4 @@ module.exports = {
   verifyAnyUser,
   checkUserActive,
   checkOwnership,
-  validateGuruMataPelajaran,
 };

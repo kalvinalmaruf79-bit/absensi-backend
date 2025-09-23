@@ -1,38 +1,36 @@
 // src/seed/seed.js
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
-// BENAR: Path diubah menjadi '../' untuk naik satu level dari folder 'seed'
-const SuperAdmin = require("../models/SuperAdmin");
+const User = require("../models/User"); // Diubah ke User
 require("dotenv").config();
 
 const MONGO_URI = process.env.DB_URI;
 
 const seedSuperAdmin = async () => {
   try {
-    // 1. Koneksi ke Database
-    // Opsi 'useNewUrlParser' dan 'useUnifiedTopology' dihapus karena sudah tidak berlaku di Mongoose versi baru.
     await mongoose.connect(MONGO_URI);
     console.log("✅ Berhasil terhubung ke MongoDB untuk seeding.");
 
-    // 2. Cek apakah super admin sudah ada
-    const existingAdmin = await SuperAdmin.findOne({
+    const existingAdmin = await User.findOne({
+      // Diubah ke User
       identifier: "superadmin",
     });
     if (existingAdmin) {
       console.log("ℹ️ Super admin sudah ada. Seeding tidak diperlukan.");
-      return; // Hentikan proses jika sudah ada
+      return;
     }
 
-    // 3. Jika belum ada, buat super admin baru
     console.log("⏳ Membuat akun super admin...");
-    const hashedPassword = await bcrypt.hash("password123", 10); // Hash password
+    const hashedPassword = await bcrypt.hash("password123", 10);
 
-    const newSuperAdmin = new SuperAdmin({
+    const newSuperAdmin = new User({
+      // Diubah ke User
       name: "Super Admin",
       email: "superadmin@sekolah.com",
-      identifier: "superadmin", // Ini akan digunakan untuk login
+      identifier: "superadmin",
       password: hashedPassword,
-      isPasswordDefault: false, // Set ke false agar tidak diminta ganti password
+      role: "super_admin", // Role ditambahkan
+      isPasswordDefault: false,
     });
 
     await newSuperAdmin.save();
@@ -42,7 +40,6 @@ const seedSuperAdmin = async () => {
   } catch (error) {
     console.error("❌ Gagal menjalankan seeder:", error);
   } finally {
-    // 4. Tutup koneksi setelah selesai
     if (mongoose.connection.readyState === 1) {
       await mongoose.connection.close();
       console.log("🔌 Koneksi MongoDB ditutup.");
@@ -50,5 +47,4 @@ const seedSuperAdmin = async () => {
   }
 };
 
-// Jalankan fungsi seeder
 seedSuperAdmin();

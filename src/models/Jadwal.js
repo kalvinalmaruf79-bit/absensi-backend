@@ -17,7 +17,7 @@ const jadwalSchema = new mongoose.Schema(
 
     guru: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Guru",
+      ref: "User", // Diubah ke User
       required: true,
     },
 
@@ -30,7 +30,6 @@ const jadwalSchema = new mongoose.Schema(
     jamMulai: { type: String, required: true }, // Format: "07:00"
     jamSelesai: { type: String, required: true }, // Format: "08:30"
 
-    // Semester
     semester: {
       type: String,
       enum: ["ganjil", "genap"],
@@ -39,10 +38,9 @@ const jadwalSchema = new mongoose.Schema(
 
     tahunAjaran: { type: String, required: true },
 
-    // Dibuat oleh super admin
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "SuperAdmin",
+      ref: "User", // Diubah ke User
       required: true,
     },
 
@@ -53,7 +51,6 @@ const jadwalSchema = new mongoose.Schema(
   }
 );
 
-// Index untuk mencegah jadwal bentrok
 jadwalSchema.index(
   {
     kelas: 1,

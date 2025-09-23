@@ -2,7 +2,6 @@
 const express = require("express");
 const router = express.Router();
 
-// Import semua function yang dibutuhkan
 const {
   getDashboard,
   getJadwalGuru,
@@ -12,6 +11,8 @@ const {
   getDetailNilaiSiswa,
   exportNilai,
   getAnalisisKinerjaSiswa,
+  getAbsensiBySesi, // Ditambahkan
+  getSiswaWaliKelas, // Ditambahkan
 } = require("../controllers/guruController");
 
 const {
@@ -20,12 +21,17 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
-// Semua route memerlukan Guru access
 router.use(authMiddleware, verifyGuru, checkUserActive);
 
 // Dashboard & Profile
 router.get("/dashboard", getDashboard);
 router.get("/jadwal", getJadwalGuru);
+
+// Absensi Management
+router.get("/absensi/sesi", getAbsensiBySesi); // Rute baru
+
+// Wali Kelas
+router.get("/wali-kelas/siswa", getSiswaWaliKelas); // Rute baru
 
 // Siswa Management
 router.get("/kelas/:kelasId/siswa", getSiswaKelas);

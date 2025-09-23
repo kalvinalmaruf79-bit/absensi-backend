@@ -3,31 +3,27 @@ const mongoose = require("mongoose");
 
 const kelasSchema = new mongoose.Schema(
   {
-    nama: { type: String, required: true, unique: true }, // Contoh: "X RPL 1"
-    tingkat: { type: String, required: true }, // X, XI, XII
-    jurusan: { type: String, required: true }, // RPL, TKJ, MM, dll
+    nama: { type: String, required: true, unique: true },
+    tingkat: { type: String, required: true },
+    jurusan: { type: String, required: true },
 
-    // Wali kelas
     waliKelas: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Guru",
+      ref: "User", // Diubah ke User
     },
 
-    // Siswa dalam kelas ini
     siswa: [
       {
         type: mongoose.Schema.Types.ObjectId,
-        ref: "Siswa",
+        ref: "User", // Diubah ke User
       },
     ],
 
-    // Tahun ajaran
-    tahunAjaran: { type: String, required: true }, // 2024/2025
+    tahunAjaran: { type: String, required: true },
 
-    // Dibuat oleh super admin
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "SuperAdmin",
+      ref: "User", // Diubah ke User
       required: true,
     },
 

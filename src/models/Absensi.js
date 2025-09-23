@@ -5,7 +5,7 @@ const absensiSchema = new mongoose.Schema(
   {
     siswa: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Siswa",
+      ref: "User", // Diubah ke User
       required: true,
     },
     sesiPresensi: {
@@ -30,6 +30,10 @@ const absensiSchema = new mongoose.Schema(
     lokasiSiswa: {
       latitude: { type: Number, required: true },
       longitude: { type: Number, required: true },
+    },
+    tanggal: {
+      type: String, // Format YYYY-MM-DD
+      required: true,
     },
   },
   {

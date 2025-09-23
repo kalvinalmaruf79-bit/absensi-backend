@@ -1,33 +1,23 @@
 // controllers/guruController.js
 const mongoose = require("mongoose");
-const Guru = require("../models/Guru");
-const Siswa = require("../models/Siswa");
-const MataPelajaran = require("../models/MataPelajaran");
-const Kelas = require("../models/Kelas");
+const User = require("../models/User");
 const Jadwal = require("../models/Jadwal");
-const Nilai = require("../models/Nilai");
 const Absensi = require("../models/Absensi");
+const Nilai = require("../models/Nilai");
+const Kelas = require("../models/Kelas");
 const ExcelJS = require("exceljs");
 
 // ============= DASHBOARD & PROFILE =============
-
-// Dashboard guru
 exports.getDashboard = async (req, res) => {
   try {
-    const guruId = req.user.id;
-
-    // Get guru data dengan mata pelajaran
-    const guru = await Guru.findById(guruId).populate(
+    const guru = await User.findById(req.user.id).populate(
       "mataPelajaran",
       "nama kode"
     );
-
-    if (!guru) {
+    if (!guru || guru.role !== "guru") {
       return res.status(404).json({ message: "Guru tidak ditemukan." });
     }
 
-    // Get jadwal hari ini
-    const today = new Date();
     const hariIni = [
       "minggu",
       "senin",
@@ -36,10 +26,9 @@ exports.getDashboard = async (req, res) => {
       "kamis",
       "jumat",
       "sabtu",
-    ][today.getDay()];
-
+    ][new Date().getDay()];
     const jadwalHariIni = await Jadwal.find({
-      guru: guruId,
+      guru: guru._id,
       hari: hariIni,
       isActive: true,
     })
@@ -47,12 +36,12 @@ exports.getDashboard = async (req, res) => {
       .populate("mataPelajaran", "nama")
       .sort({ jamMulai: 1 });
 
-    // Get statistik siswa dari kelas yang diajar
     const jadwalGuru = await Jadwal.find({
-      guru: guruId,
+      guru: guru._id,
       isActive: true,
     }).distinct("kelas");
-    const totalSiswa = await Siswa.countDocuments({
+    const totalSiswa = await User.countDocuments({
+      role: "siswa",
       kelas: { $in: jadwalGuru },
       isActive: true,
     });
@@ -71,21 +60,15 @@ exports.getDashboard = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Error getting guru dashboard:", error);
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
-// Get jadwal guru
+// ============= JADWAL & KELAS =============
 exports.getJadwalGuru = async (req, res) => {
   try {
     const { tahunAjaran, semester } = req.query;
-
-    let filter = {
-      guru: req.user.id,
-      isActive: true,
-    };
-
+    let filter = { guru: req.user.id, isActive: true };
     if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
     if (semester) filter.semester = semester;
 
@@ -94,7 +77,6 @@ exports.getJadwalGuru = async (req, res) => {
       .populate("mataPelajaran", "nama kode")
       .sort({ hari: 1, jamMulai: 1 });
 
-    // Group by hari
     const jadwalPerHari = {
       senin: [],
       selasa: [],
@@ -103,56 +85,126 @@ exports.getJadwalGuru = async (req, res) => {
       jumat: [],
       sabtu: [],
     };
-
     jadwal.forEach((j) => {
-      if (jadwalPerHari[j.hari]) {
-        jadwalPerHari[j.hari].push(j);
-      }
+      if (jadwalPerHari[j.hari]) jadwalPerHari[j.hari].push(j);
     });
 
     res.json(jadwalPerHari);
   } catch (error) {
-    console.error("Error getting jadwal guru:", error);
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
-// Get siswa dari kelas yang diajar
 exports.getSiswaKelas = async (req, res) => {
   try {
     const { kelasId } = req.params;
-
-    // Validasi apakah guru mengajar di kelas ini
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
       isActive: true,
     });
-
     if (!jadwal) {
       return res
         .status(403)
         .json({ message: "Anda tidak mengajar di kelas ini." });
     }
 
-    const siswa = await Siswa.find({
+    const siswa = await User.find({
       kelas: kelasId,
+      role: "siswa",
       isActive: true,
     })
-      .populate("kelas", "nama tingkat jurusan")
       .select("-password")
       .sort({ name: 1 });
-
     res.json(siswa);
   } catch (error) {
-    console.error("Error getting siswa kelas:", error);
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+// ============= ABSENSI =============
+exports.getAbsensiBySesi = async (req, res) => {
+  try {
+    const { kelasId, mataPelajaranId, tanggal } = req.query;
+    if (!kelasId || !mataPelajaranId || !tanggal) {
+      return res
+        .status(400)
+        .json({ message: "Kelas, mata pelajaran, dan tanggal wajib diisi." });
+    }
+
+    const jadwal = await Jadwal.findOne({
+      guru: req.user.id,
+      kelas: kelasId,
+      mataPelajaran: mataPelajaranId,
+      isActive: true,
+    });
+    if (!jadwal) {
+      return res
+        .status(403)
+        .json({
+          message: "Anda tidak memiliki jadwal mengajar untuk kelas ini.",
+        });
+    }
+
+    const absensiRecords = await Absensi.find({
+      jadwal: jadwal._id,
+      tanggal: tanggal,
+    }).select("siswa keterangan");
+
+    const absensiMap = new Map();
+    absensiRecords.forEach((record) =>
+      absensiMap.set(record.siswa.toString(), record.keterangan)
+    );
+
+    const semuaSiswa = await User.find({
+      kelas: kelasId,
+      role: "siswa",
+      isActive: true,
+    }).select("name identifier");
+
+    const daftarHadir = semuaSiswa.map((siswa) => ({
+      siswa,
+      keterangan: absensiMap.get(siswa._id.toString()) || "alpa",
+    }));
+
+    res.json(daftarHadir);
+  } catch (error) {
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+// ============= WALI KELAS =============
+exports.getSiswaWaliKelas = async (req, res) => {
+  try {
+    const kelas = await Kelas.findOne({
+      waliKelas: req.user.id,
+      isActive: true,
+    });
+    if (!kelas) {
+      return res.status(404).json({ message: "Anda bukan wali kelas aktif." });
+    }
+    const siswa = await User.find({
+      kelas: kelas._id,
+      role: "siswa",
+      isActive: true,
+    })
+      .select("name identifier email")
+      .sort({ name: 1 });
+
+    res.json({
+      kelas: {
+        nama: kelas.nama,
+        tingkat: kelas.tingkat,
+        jurusan: kelas.jurusan,
+      },
+      siswa,
+    });
+  } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
 // ============= NILAI MANAGEMENT =============
-
-// Input nilai siswa
 exports.inputNilai = async (req, res) => {
   try {
     const {
@@ -166,424 +218,131 @@ exports.inputNilai = async (req, res) => {
       tahunAjaran,
     } = req.body;
 
-    // Validasi input
-    if (
-      !siswaId ||
-      !kelasId ||
-      !mataPelajaranId ||
-      !jenisPenilaian ||
-      nilai === undefined ||
-      !semester ||
-      !tahunAjaran
-    ) {
-      return res
-        .status(400)
-        .json({ message: "Semua field nilai wajib diisi." });
-    }
-
-    // Validasi nilai range 0-100
-    if (nilai < 0 || nilai > 100) {
-      return res.status(400).json({ message: "Nilai harus antara 0-100." });
-    }
-
-    // Validasi guru mengajar mata pelajaran di kelas
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
       isActive: true,
     });
-
     if (!jadwal) {
-      return res.status(403).json({
-        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
-      });
+      return res
+        .status(403)
+        .json({
+          message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+        });
     }
 
-    // Validasi siswa ada di kelas
-    const siswa = await Siswa.findOne({
+    const siswa = await User.findOne({
       _id: siswaId,
       kelas: kelasId,
+      role: "siswa",
       isActive: true,
     });
-
     if (!siswa) {
       return res
         .status(404)
         .json({ message: "Siswa tidak ditemukan di kelas ini." });
     }
 
-    // Cek apakah nilai sudah ada
-    const existingNilai = await Nilai.findOne({
+    const newNilai = new Nilai({
       siswa: siswaId,
+      kelas: kelasId,
       mataPelajaran: mataPelajaranId,
+      guru: req.user.id,
       jenisPenilaian,
+      nilai,
+      deskripsi,
       semester,
       tahunAjaran,
     });
+    await newNilai.save();
 
-    if (existingNilai) {
-      // Update nilai yang sudah ada
-      existingNilai.nilai = nilai;
-      existingNilai.deskripsi = deskripsi;
-      existingNilai.tanggalPenilaian = new Date();
-      await existingNilai.save();
-
-      res.json({
-        message: "Nilai berhasil diupdate.",
-        nilai: existingNilai,
-      });
-    } else {
-      // Buat nilai baru
-      const newNilai = new Nilai({
-        siswa: siswaId,
-        kelas: kelasId,
-        mataPelajaran: mataPelajaranId,
-        guru: req.user.id,
-        jenisPenilaian,
-        nilai,
-        deskripsi,
-        semester,
-        tahunAjaran,
-      });
-
-      await newNilai.save();
-
-      res.status(201).json({
-        message: "Nilai berhasil disimpan.",
-        nilai: newNilai,
-      });
-    }
+    res
+      .status(201)
+      .json({ message: "Nilai berhasil disimpan.", nilai: newNilai });
   } catch (error) {
-    console.error("Error input nilai:", error);
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
-// Get nilai siswa per kelas dan mata pelajaran
 exports.getNilaiSiswa = async (req, res) => {
   try {
     const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
 
-    if (!kelasId || !mataPelajaranId) {
-      return res
-        .status(400)
-        .json({ message: "Kelas dan mata pelajaran wajib dipilih." });
-    }
-
-    // Validasi guru mengajar mata pelajaran di kelas
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
       isActive: true,
     });
-
     if (!jadwal) {
-      return res.status(403).json({
-        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
-      });
+      return res
+        .status(403)
+        .json({
+          message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+        });
     }
 
-    let filter = {
+    const nilai = await Nilai.find({
       guru: req.user.id,
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
-    };
-
-    if (semester) filter.semester = semester;
-    if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
-
-    const nilai = await Nilai.find(filter)
+      semester,
+      tahunAjaran,
+    })
       .populate("siswa", "name identifier")
-      .populate("mataPelajaran", "nama kode")
-      .sort({ "siswa.name": 1, jenisPenilaian: 1 });
+      .populate("mataPelajaran", "nama kode");
 
-    // Group nilai by siswa
-    const nilaiPerSiswa = {};
-    nilai.forEach((n) => {
-      const siswaId = n.siswa._id.toString();
-      if (!nilaiPerSiswa[siswaId]) {
-        nilaiPerSiswa[siswaId] = {
-          siswa: n.siswa,
-          nilai: {},
-        };
-      }
-      nilaiPerSiswa[siswaId].nilai[n.jenisPenilaian] = {
-        nilai: n.nilai,
-        deskripsi: n.deskripsi,
-        tanggalPenilaian: n.tanggalPenilaian,
-      };
-    });
-
-    res.json(Object.values(nilaiPerSiswa));
+    res.json(nilai);
   } catch (error) {
-    console.error("Error getting nilai siswa:", error);
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
-// Get detail nilai siswa individual
 exports.getDetailNilaiSiswa = async (req, res) => {
   try {
     const { siswaId } = req.params;
-    const { mataPelajaranId, semester, tahunAjaran } = req.query;
 
-    let filter = {
-      siswa: siswaId,
-      guru: req.user.id, // Guru hanya bisa lihat nilai yang dia input
-    };
-
-    if (mataPelajaranId) filter.mataPelajaran = mataPelajaranId;
-    if (semester) filter.semester = semester;
-    if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
-
-    const nilai = await Nilai.find(filter)
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name")
-      .sort({ mataPelajaran: 1, jenisPenilaian: 1 });
-
-    const siswa = await Siswa.findById(siswaId)
+    const siswa = await User.findById(siswaId)
       .populate("kelas", "nama tingkat jurusan")
       .select("-password");
-
-    if (!siswa) {
+    if (!siswa || siswa.role !== "siswa") {
       return res.status(404).json({ message: "Siswa tidak ditemukan." });
     }
 
-    res.json({
-      siswa,
-      nilai,
-    });
+    const nilai = await Nilai.find({ siswa: siswaId, guru: req.user.id })
+      .populate("mataPelajaran", "nama kode")
+      .sort({ createdAt: -1 });
+
+    res.json({ siswa, nilai });
   } catch (error) {
-    console.error("Error getting detail nilai siswa:", error);
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
-// Export nilai ke Excel
 exports.exportNilai = async (req, res) => {
   try {
-    const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
-
-    if (!kelasId || !mataPelajaranId) {
-      return res
-        .status(400)
-        .json({ message: "Kelas dan mata pelajaran wajib dipilih." });
-    }
-
-    // Validasi guru mengajar mata pelajaran di kelas
-    const jadwal = await Jadwal.findOne({
-      guru: req.user.id,
-      kelas: kelasId,
-      mataPelajaran: mataPelajaranId,
-      isActive: true,
-    });
-
-    if (!jadwal) {
-      return res.status(403).json({
-        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+    // Implementasi export nilai dengan model User
+    res
+      .status(501)
+      .json({
+        message: "Fungsi export belum diimplementasikan dengan model User.",
       });
-    }
-
-    // Get data
-    const [kelas, mataPelajaran, nilai] = await Promise.all([
-      Kelas.findById(kelasId),
-      MataPelajaran.findById(mataPelajaranId),
-      Nilai.find({
-        kelas: kelasId,
-        mataPelajaran: mataPelajaranId,
-        guru: req.user.id,
-        ...(semester && { semester }),
-        ...(tahunAjaran && { tahunAjaran }),
-      }).populate("siswa", "name identifier"),
-    ]);
-
-    if (!kelas || !mataPelajaran) {
-      return res
-        .status(404)
-        .json({ message: "Kelas atau mata pelajaran tidak ditemukan." });
-    }
-
-    // Create workbook
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("Nilai Siswa");
-
-    // Header info
-    worksheet.mergeCells("A1:F1");
-    worksheet.getCell(
-      "A1"
-    ).value = `Nilai ${mataPelajaran.nama} - ${kelas.nama}`;
-    worksheet.getCell("A1").font = { bold: true, size: 14 };
-    worksheet.getCell("A1").alignment = { horizontal: "center" };
-
-    if (semester && tahunAjaran) {
-      worksheet.mergeCells("A2:F2");
-      worksheet.getCell("A2").value = `Semester ${semester} - ${tahunAjaran}`;
-      worksheet.getCell("A2").alignment = { horizontal: "center" };
-    }
-
-    // Column headers
-    const startRow = semester && tahunAjaran ? 4 : 3;
-    worksheet.getRow(startRow).values = [
-      "No",
-      "NIS",
-      "Nama",
-      "Tugas",
-      "UTS",
-      "UAS",
-    ];
-    worksheet.getRow(startRow).font = { bold: true };
-
-    // Data rows
-    const nilaiPerSiswa = {};
-    nilai.forEach((n) => {
-      const siswaId = n.siswa._id.toString();
-      if (!nilaiPerSiswa[siswaId]) {
-        nilaiPerSiswa[siswaId] = {
-          siswa: n.siswa,
-          tugas: "-",
-          uts: "-",
-          uas: "-",
-          praktek: "-",
-          harian: "-",
-        };
-      }
-      nilaiPerSiswa[siswaId][n.jenisPenilaian] = n.nilai;
-    });
-
-    let rowIndex = startRow + 1;
-    let no = 1;
-    Object.values(nilaiPerSiswa).forEach((data) => {
-      worksheet.getRow(rowIndex).values = [
-        no++,
-        data.siswa.identifier,
-        data.siswa.name,
-        data.tugas,
-        data.uts,
-        data.uas,
-      ];
-      rowIndex++;
-    });
-
-    // Set column widths
-    worksheet.columns = [
-      { width: 5 }, // No
-      { width: 15 }, // NIS
-      { width: 25 }, // Nama
-      { width: 10 }, // Tugas
-      { width: 10 }, // UTS
-      { width: 10 }, // UAS
-    ];
-
-    // Response headers
-    res.setHeader(
-      "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename=nilai-${kelas.nama.replace(
-        /\s+/g,
-        "-"
-      )}-${mataPelajaran.nama.replace(/\s+/g, "-")}.xlsx`
-    );
-
-    await workbook.xlsx.write(res);
-    res.status(200).end();
   } catch (error) {
-    console.error("Error exporting nilai:", error);
-    res.status(500).json({ message: "Gagal export nilai ke Excel." });
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
 // ============= ANALISIS KINERJA SISWA =============
 exports.getAnalisisKinerjaSiswa = async (req, res) => {
   try {
-    const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
-
-    if (!kelasId || !mataPelajaranId) {
-      return res
-        .status(400)
-        .json({ message: "Kelas dan mata pelajaran wajib dipilih." });
-    }
-
-    const jadwal = await Jadwal.findOne({
-      guru: req.user.id,
-      kelas: kelasId,
-      mataPelajaran: mataPelajaranId,
-    });
-
-    if (!jadwal) {
-      return res.status(403).json({
-        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+    // Implementasi analisis kinerja dengan model User
+    res
+      .status(501)
+      .json({
+        message: "Fungsi analisis belum diimplementasikan dengan model User.",
       });
-    }
-
-    const nilaiSiswa = await Nilai.find({
-      kelas: kelasId,
-      mataPelajaran: mataPelajaranId,
-      ...(semester && { semester }),
-      ...(tahunAjaran && { tahunAjaran }),
-    }).populate("siswa", "name");
-
-    if (nilaiSiswa.length === 0) {
-      return res.json({
-        message: "Belum ada data nilai untuk analisis.",
-        rataRataKelas: 0,
-        distribusiNilai: {},
-        nilaiTertinggi: null,
-        nilaiTerendah: null,
-        performaSiswa: [],
-      });
-    }
-
-    let totalNilai = 0;
-    const nilaiPerSiswa = {};
-    const distribusiNilai = {
-      "Sangat Baik (A)": 0,
-      "Baik (B)": 0,
-      "Cukup (C)": 0,
-      "Kurang (D)": 0,
-      "Sangat Kurang (E)": 0,
-    };
-
-    nilaiSiswa.forEach((n) => {
-      totalNilai += n.nilai;
-      const siswaId = n.siswa._id.toString();
-      if (!nilaiPerSiswa[siswaId]) {
-        nilaiPerSiswa[siswaId] = {
-          nama: n.siswa.name,
-          total: 0,
-          count: 0,
-        };
-      }
-      nilaiPerSiswa[siswaId].total += n.nilai;
-      nilaiPerSiswa[siswaId].count += 1;
-
-      if (n.nilai >= 85) distribusiNilai["Sangat Baik (A)"]++;
-      else if (n.nilai >= 75) distribusiNilai["Baik (B)"]++;
-      else if (n.nilai >= 65) distribusiNilai["Cukup (C)"]++;
-      else if (n.nilai >= 50) distribusiNilai["Kurang (D)"]++;
-      else distribusiNilai["Sangat Kurang (E)"]++;
-    });
-
-    const performaSiswa = Object.values(nilaiPerSiswa).map((s) => ({
-      nama: s.nama,
-      rataRata: s.total / s.count,
-    }));
-
-    performaSiswa.sort((a, b) => b.rataRata - a.rataRata);
-
-    res.json({
-      rataRataKelas: totalNilai / nilaiSiswa.length,
-      distribusiNilai,
-      nilaiTertinggi: performaSiswa[0],
-      nilaiTerendah: performaSiswa[performaSiswa.length - 1],
-      performaSiswa,
-    });
   } catch (error) {
-    console.error("Error getting analisis kinerja siswa:", error);
-    res.status(500).json({ message: "Gagal mendapatkan analisis kinerja." });
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };

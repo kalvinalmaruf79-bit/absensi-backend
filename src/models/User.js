@@ -27,9 +27,6 @@ const userSchema = new mongoose.Schema(
       {
         type: mongoose.Schema.Types.ObjectId,
         ref: "MataPelajaran",
-        required: function () {
-          return this.role === "guru";
-        },
       },
     ],
 

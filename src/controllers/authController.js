@@ -1,42 +1,7 @@
-// controllers/authController.js (Updated)
-const mongoose = require("mongoose");
-const Guru = require("../models/Guru");
-const Siswa = require("../models/Siswa");
-const SuperAdmin = require("../models/SuperAdmin");
-const bcrypt = require("bcrypt");
+// controllers/authController.js
+const User = require("../models/User");
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-
-const findUserByIdentifier = async (identifier) => {
-  let user = await SuperAdmin.findOne({ identifier, isActive: true });
-  if (user) return user;
-  user = await Guru.findOne({ identifier, isActive: true }).populate(
-    "mataPelajaran",
-    "nama kode"
-  );
-  if (user) return user;
-  user = await Siswa.findOne({ identifier, isActive: true }).populate(
-    "kelas",
-    "nama tingkat jurusan"
-  );
-  return user;
-};
-
-const findUserByIdAndRole = async (id, role) => {
-  switch (role) {
-    case "super_admin":
-      return await SuperAdmin.findById(id);
-    case "guru":
-      return await Guru.findById(id)
-        .populate("mataPelajaran", "nama kode")
-        .select("-password");
-    case "siswa":
-      return await Siswa.findById(id)
-        .populate("kelas", "nama tingkat jurusan")
-        .select("-password");
-    default:
-      return null;
-  }
-};
 
 // Login user (semua role)
 exports.loginUser = async (req, res) => {
@@ -49,7 +14,9 @@ exports.loginUser = async (req, res) => {
         .json({ message: "Identifier dan Password wajib diisi" });
     }
 
-    const user = await findUserByIdentifier(identifier);
+    const user = await User.findOne({ identifier, isActive: true })
+      .populate("mataPelajaran", "nama kode")
+      .populate("kelas", "nama tingkat jurusan");
 
     if (!user) {
       return res
@@ -68,17 +35,8 @@ exports.loginUser = async (req, res) => {
       { expiresIn: "1d" }
     );
 
-    // Remove password from response
-    const userResponse = {
-      _id: user._id,
-      name: user.name,
-      email: user.email,
-      identifier: user.identifier,
-      role: user.role,
-      isPasswordDefault: user.isPasswordDefault,
-      ...(user.role === "guru" && { mataPelajaran: user.mataPelajaran }),
-      ...(user.role === "siswa" && { kelas: user.kelas }),
-    };
+    const userResponse = user.toObject();
+    delete userResponse.password;
 
     res.json({
       message: "Login berhasil",
@@ -87,14 +45,17 @@ exports.loginUser = async (req, res) => {
     });
   } catch (error) {
     console.error("Error saat login:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
 // Get user profile
 exports.getUserProfile = async (req, res) => {
   try {
-    const user = await findUserByIdAndRole(req.user.id, req.user.role);
+    const user = await User.findById(req.user.id)
+      .select("-password")
+      .populate("mataPelajaran", "nama kode")
+      .populate("kelas", "nama tingkat jurusan");
 
     if (!user) {
       return res.status(404).json({ message: "User tidak ditemukan" });
@@ -103,14 +64,13 @@ exports.getUserProfile = async (req, res) => {
     res.json(user);
   } catch (error) {
     console.error("Error mengambil profil pengguna:", error);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
 // Change password (untuk semua user)
 exports.changePassword = async (req, res) => {
   try {
-    const { id, role } = req.user;
     const { oldPassword, newPassword } = req.body;
 
     if (!oldPassword || !newPassword) {
@@ -119,7 +79,7 @@ exports.changePassword = async (req, res) => {
         .json({ message: "Password lama dan baru wajib diisi" });
     }
 
-    const user = await findUserByIdAndRole(id, role);
+    const user = await User.findById(req.user.id);
     if (!user) {
       return res.status(404).json({ message: "User tidak ditemukan" });
     }
@@ -130,7 +90,7 @@ exports.changePassword = async (req, res) => {
     }
 
     user.password = await bcrypt.hash(newPassword, 10);
-    user.isPasswordDefault = false; // Mark bahwa user sudah ganti password
+    user.isPasswordDefault = false;
     await user.save();
 
     res.json({ message: "Password berhasil diganti" });
@@ -143,14 +103,13 @@ exports.changePassword = async (req, res) => {
 // First time password change (untuk user baru)
 exports.firstTimePasswordChange = async (req, res) => {
   try {
-    const { id, role } = req.user;
     const { newPassword } = req.body;
 
     if (!newPassword) {
       return res.status(400).json({ message: "Password baru wajib diisi" });
     }
 
-    const user = await findUserByIdAndRole(id, role);
+    const user = await User.findById(req.user.id);
     if (!user) {
       return res.status(404).json({ message: "User tidak ditemukan" });
     }

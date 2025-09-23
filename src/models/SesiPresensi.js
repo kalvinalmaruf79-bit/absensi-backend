@@ -1,4 +1,4 @@
-// models/SesiPresensi.js - Model baru untuk sesi presensi
+// models/SesiPresensi.js
 const mongoose = require("mongoose");
 
 const sesiPresensiSchema = new mongoose.Schema(
@@ -22,10 +22,9 @@ const sesiPresensiSchema = new mongoose.Schema(
 
     tanggal: {
       type: String,
-      required: true, // Format: YYYY-MM-DD
+      required: true,
     },
 
-    // Waktu kedaluwarsa sesi (misal: 15 menit setelah dibuat)
     expiredAt: {
       type: Date,
       required: true,
@@ -38,7 +37,7 @@ const sesiPresensiSchema = new mongoose.Schema(
 
     dibuatOleh: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Guru",
+      ref: "User", // Diubah ke User
       required: true,
     },
   },
@@ -47,7 +46,6 @@ const sesiPresensiSchema = new mongoose.Schema(
   }
 );
 
-// Auto-expire documents setelah waktu kedaluwarsa
 sesiPresensiSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model("SesiPresensi", sesiPresensiSchema);

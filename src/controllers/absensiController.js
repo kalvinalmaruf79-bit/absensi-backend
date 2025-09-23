@@ -1,8 +1,9 @@
-// controllers/absensiController.js - Fixed Version
+// controllers/absensiController.js
 const SesiPresensi = require("../models/SesiPresensi");
 const Absensi = require("../models/Absensi");
 const Jadwal = require("../models/Jadwal");
-const Siswa = require("../models/Siswa");
+const User = require("../models/User"); // DIUBAH DARI SISWA KE USER
+const ExcelJS = require("exceljs");
 
 // Radius maksimal presensi (dalam meter)
 const MAX_RADIUS = 500;
@@ -25,6 +26,7 @@ const haversineDistance = (coords1, coords2) => {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 };
+
 exports.checkIn = async (req, res) => {
   try {
     const { kodeSesi, latitude, longitude } = req.body;
@@ -48,8 +50,13 @@ exports.checkIn = async (req, res) => {
       });
     }
 
-    const siswa = await Siswa.findById(siswaId);
-    if (!siswa || !siswa.kelas.equals(sesiPresensi.jadwal.kelas)) {
+    // MENGGUNAKAN MODEL USER DENGAN PENGECEKAN ROLE
+    const siswa = await User.findById(siswaId);
+    if (
+      !siswa ||
+      siswa.role !== "siswa" ||
+      !siswa.kelas.equals(sesiPresensi.jadwal.kelas)
+    ) {
       return res.status(403).json({
         message: "Anda tidak terdaftar di kelas yang sesuai dengan sesi ini.",
       });
@@ -59,9 +66,7 @@ exports.checkIn = async (req, res) => {
     const existingAbsensi = await Absensi.findOne({
       siswa: siswaId,
       jadwal: sesiPresensi.jadwal._id,
-      createdAt: {
-        $gte: new Date(tanggalHariIni),
-      },
+      tanggal: tanggalHariIni,
     });
 
     if (existingAbsensi) {
@@ -76,7 +81,8 @@ exports.checkIn = async (req, res) => {
       sesiPresensi.lokasi
     );
 
-    if (jarak > MAX_RADIUS) {
+    // Validasi jarak bisa dinonaktifkan saat development dengan variabel lingkungan
+    if (process.env.NODE_ENV === "production" && jarak > MAX_RADIUS) {
       return res.status(403).json({
         message: `Anda berada di luar radius yang diizinkan! Jarak Anda ${jarak.toFixed(
           0
@@ -89,6 +95,7 @@ exports.checkIn = async (req, res) => {
       sesiPresensi: sesiPresensi._id,
       jadwal: sesiPresensi.jadwal._id,
       lokasiSiswa: { latitude, longitude },
+      tanggal: tanggalHariIni,
     });
 
     await absensi.save();
@@ -156,7 +163,7 @@ exports.getRiwayatAbsensi = async (req, res) => {
   }
 };
 
-// Update keterangan presensi (function yang mungkin hilang)
+// Update keterangan presensi
 exports.updateKeteranganPresensi = async (req, res) => {
   try {
     const { id } = req.params;
@@ -191,9 +198,7 @@ exports.updateKeteranganPresensi = async (req, res) => {
   }
 };
 
-// Export Excel (function yang mungkin hilang)
-const ExcelJS = require("exceljs");
-
+// Export Excel
 exports.exportAbsensi = async (req, res) => {
   try {
     const { tanggal, kelasId, mataPelajaranId } = req.query;
@@ -204,7 +209,6 @@ exports.exportAbsensi = async (req, res) => {
       filter.tanggal = tanggal;
     }
 
-    // Guru hanya bisa export absensi dari jadwal yang dia ajar
     const jadwalGuru = await Jadwal.find({
       guru: guruId,
       isActive: true,

@@ -5,7 +5,7 @@ const nilaiSchema = new mongoose.Schema(
   {
     siswa: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Siswa",
+      ref: "User", // Diubah ke User
       required: true,
     },
 
@@ -23,18 +23,16 @@ const nilaiSchema = new mongoose.Schema(
 
     guru: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Guru",
+      ref: "User", // Diubah ke User
       required: true,
     },
 
-    // Jenis penilaian
     jenisPenilaian: {
       type: String,
       enum: ["tugas", "uts", "uas", "praktek", "harian"],
       required: true,
     },
 
-    // Nilai numerik
     nilai: {
       type: Number,
       required: true,
@@ -42,10 +40,8 @@ const nilaiSchema = new mongoose.Schema(
       max: 100,
     },
 
-    // Deskripsi/catatan nilai
     deskripsi: { type: String },
 
-    // Semester dan tahun ajaran
     semester: {
       type: String,
       enum: ["ganjil", "genap"],
@@ -54,7 +50,6 @@ const nilaiSchema = new mongoose.Schema(
 
     tahunAjaran: { type: String, required: true },
 
-    // Tanggal penilaian
     tanggalPenilaian: { type: Date, default: Date.now },
   },
   {
@@ -62,7 +57,6 @@ const nilaiSchema = new mongoose.Schema(
   }
 );
 
-// Index untuk mencegah duplikasi nilai dengan jenis yang sama
 nilaiSchema.index(
   {
     siswa: 1,
