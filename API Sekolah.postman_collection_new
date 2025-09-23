@@ -1,0 +1,856 @@
+{
+	"info": {
+		"_postman_id": "084ba998-bc76-4e05-bdb2-088fb81641d0",
+		"name": "API Sekolah",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "32084244"
+	},
+	"item": [
+		{
+			"name": "[[SETUP AWAL]]",
+			"item": [
+				{
+					"name": "Login Super Admin",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"identifier\": \"SUPERADMIN001\",\n    \"password\": \"superadmin123\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "1. Buat Mata Pelajaran",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"mataPelajaranId\", response.mataPelajaran._id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{superAdminToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"nama\": \"Matematika Wajib\",\n    \"kode\": \"MTK-01\",\n    \"deskripsi\": \"Pelajaran matematika untuk semua jurusan\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/super-admin/mata-pelajaran",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"super-admin",
+								"mata-pelajaran"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "2. Buat Guru",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"guruId\", response.guru._id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{superAdminToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Budi Santoso\",\n    \"email\": \"budi.s@email.com\",\n    \"identifier\": \"G12345\",\n    \"mataPelajaran\": [\"{{mataPelajaranId}}\"]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/super-admin/users/guru",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"super-admin",
+								"users",
+								"guru"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "3. Buat Kelas",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"kelasId\", response.kelas._id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{superAdminToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"nama\": \"X RPL 1\",\n    \"tingkat\": \"X\",\n    \"jurusan\": \"RPL\",\n    \"tahunAjaran\": \"2024/2025\",\n    \"waliKelas\": \"{{guruId}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/super-admin/kelas",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"super-admin",
+								"kelas"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "4. Buat Siswa",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"siswaId\", response.siswa._id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{superAdminToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Ani Suryani\",\n    \"email\": \"ani.s@email.com\",\n    \"identifier\": \"S54321\",\n    \"kelas\": \"{{kelasId}}\",\n    \"password\": \"password123\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/super-admin/users/siswa",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"super-admin",
+								"users",
+								"siswa"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "5. Buat Jadwal",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"jadwalId\", response.jadwal._id);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{superAdminToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"kelas\": \"{{kelasId}}\",\n    \"mataPelajaran\": \"{{mataPelajaranId}}\",\n    \"guru\": \"{{guruId}}\",\n    \"hari\": \"senin\",\n    \"jamMulai\": \"07:00\",\n    \"jamSelesai\": \"08:30\",\n    \"semester\": \"ganjil\",\n    \"tahunAjaran\": \"2024/2025\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/super-admin/jadwal",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"super-admin",
+								"jadwal"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Get Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{superAdminToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/auth/profile",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"profile"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Change Password",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{siswaToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"oldPassword\": \"password123\",\n    \"newPassword\": \"newPassword456\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/change-password",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"change-password"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Flow Guru",
+			"item": [
+				{
+					"name": "Login Guru",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"guruToken\", response.token);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"identifier\": \"G12345\",\n    \"password\": \"G12345\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Dashboard Guru",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{guruToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/guru/dashboard",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"guru",
+								"dashboard"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Generate QR Code Presensi",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"kodeSesi\", response.kodeUnik);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{guruToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"jadwalId\": \"{{jadwalId}}\",\n    \"latitude\": -6.200000,\n    \"longitude\": 106.816666\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/qr/generate",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"qr",
+								"generate"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Input Nilai Siswa",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{guruToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"siswaId\": \"{{siswaId}}\",\n    \"kelasId\": \"{{kelasId}}\",\n    \"mataPelajaranId\": \"{{mataPelajaranId}}\",\n    \"jenisPenilaian\": \"tugas\",\n    \"nilai\": 90,\n    \"deskripsi\": \"Tugas 1\",\n    \"semester\": \"ganjil\",\n    \"tahunAjaran\": \"2024/2025\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/guru/nilai",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"guru",
+								"nilai"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Lihat Nilai Siswa per Kelas",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{guruToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/guru/nilai?kelasId={{kelasId}}&mataPelajaranId={{mataPelajaranId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"guru",
+								"nilai"
+							],
+							"query": [
+								{
+									"key": "kelasId",
+									"value": "{{kelasId}}"
+								},
+								{
+									"key": "mataPelajaranId",
+									"value": "{{mataPelajaranId}}"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Flow Siswa",
+			"item": [
+				{
+					"name": "Login Siswa",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const response = pm.response.json();",
+									"pm.collectionVariables.set(\"siswaToken\", response.token);"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"identifier\": \"S54321\",\n    \"password\": \"password123\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"login"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Dashboard Siswa",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{siswaToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/siswa/dashboard",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"siswa",
+								"dashboard"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Check-in Presensi",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{siswaToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"kodeSesi\": \"{{kodeSesi}}\",\n    \"latitude\": -6.200000,\n    \"longitude\": 106.816666\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/absensi/check-in",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"absensi",
+								"check-in"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Upload Laporan Tugas",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{siswaToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "/path/to/your/file.pdf"
+								},
+								{
+									"key": "deskripsi",
+									"value": "Ini adalah laporan tugas Matematika.",
+									"type": "text"
+								},
+								{
+									"key": "kategori",
+									"value": "tugas",
+									"type": "text"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/laporan/upload",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"laporan",
+								"upload"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Lihat Nilai",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{siswaToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/siswa/nilai",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"siswa",
+								"nilai"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Lihat Teman Sekelas",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{siswaToken}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/siswa/teman-sekelas",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"siswa",
+								"teman-sekelas"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000/api"
+		},
+		{
+			"key": "superAdminToken",
+			"value": ""
+		},
+		{
+			"key": "guruToken",
+			"value": ""
+		},
+		{
+			"key": "siswaToken",
+			"value": ""
+		},
+		{
+			"key": "guruId",
+			"value": ""
+		},
+		{
+			"key": "siswaId",
+			"value": ""
+		},
+		{
+			"key": "mataPelajaranId",
+			"value": ""
+		},
+		{
+			"key": "kelasId",
+			"value": ""
+		},
+		{
+			"key": "jadwalId",
+			"value": ""
+		},
+		{
+			"key": "laporanId",
+			"value": ""
+		},
+		{2
+			"key": "kodeSesi",
+			"value": ""
+		}
+	]
+}

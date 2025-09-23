@@ -1,0 +1,16 @@
+# File dependensi dan log
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun.lockb
+
+# File sensitif berisi kredensial dan konfigurasi
+.env
+
+# Folder untuk file yang di-upload oleh pengguna
+/uploads/
+
+# File sistem operasi
+.DS_Store
+Thumbs.db
