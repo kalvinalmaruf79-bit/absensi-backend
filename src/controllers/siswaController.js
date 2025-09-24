@@ -83,9 +83,10 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// Get jadwal siswa
+// Get jadwal siswa (dengan filter historis)
 exports.getJadwalSiswa = async (req, res) => {
   try {
+    const { tahunAjaran, semester } = req.query; // Tambahkan filter
     const siswa = await User.findById(req.user.id);
     if (!siswa || siswa.role !== "siswa" || !siswa.kelas) {
       return res
@@ -93,7 +94,26 @@ exports.getJadwalSiswa = async (req, res) => {
         .json({ message: "Siswa tidak ditemukan atau belum memiliki kelas." });
     }
 
-    const jadwal = await Jadwal.find({ kelas: siswa.kelas, isActive: true })
+    // Filter berdasarkan kelas aktif jika tidak ada filter waktu
+    let filter = { kelas: siswa.kelas, isActive: true };
+
+    // Jika ada filter waktu, cari kelas yang sesuai dari riwayat
+    if (tahunAjaran && semester) {
+      const riwayat = siswa.riwayatKelas.find(
+        (r) => r.tahunAjaran === tahunAjaran && r.semester === semester
+      );
+      if (riwayat) {
+        filter.kelas = riwayat.kelas;
+        filter.tahunAjaran = tahunAjaran;
+        filter.semester = semester;
+      } else {
+        // Jika tidak ketemu di riwayat, mungkin itu kelas aktif saat ini
+        filter.tahunAjaran = tahunAjaran;
+        filter.semester = semester;
+      }
+    }
+
+    const jadwal = await Jadwal.find(filter)
       .populate("mataPelajaran", "nama kode")
       .populate("guru", "name identifier")
       .sort({ hari: 1, jamMulai: 1 });
@@ -116,10 +136,16 @@ exports.getJadwalSiswa = async (req, res) => {
   }
 };
 
-// Get nilai siswa
+// Get nilai siswa (dengan filter historis)
 exports.getNilaiSiswa = async (req, res) => {
   try {
-    const nilai = await Nilai.find({ siswa: req.user.id })
+    const { tahunAjaran, semester } = req.query; // Tambahkan filter
+    let filter = { siswa: req.user.id };
+
+    if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
+    if (semester) filter.semester = semester;
+
+    const nilai = await Nilai.find(filter)
       .populate("mataPelajaran", "nama kode")
       .populate("guru", "name");
     res.json(nilai);

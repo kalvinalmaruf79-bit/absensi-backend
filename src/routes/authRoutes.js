@@ -1,4 +1,4 @@
-// routes/authRoutes.js (Updated)
+// routes/authRoutes.js
 const express = require("express");
 const router = express.Router();
 
@@ -6,7 +6,9 @@ const {
   loginUser,
   getUserProfile,
   changePassword,
-  firstTimePasswordChange,
+  forgotPassword,
+  verifyResetToken, // Endpoint verifikasi
+  resetPassword,
 } = require("../controllers/authController");
 
 const {
@@ -14,17 +16,16 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
-// Public routes
+// Rute Publik
 router.post("/login", loginUser);
+router.post("/forgot-password", forgotPassword);
 
-// Protected routes - semua user yang sudah login
+// BEST PRACTICE: Pisahkan endpoint GET untuk verifikasi dan PUT untuk submit
+router.get("/reset-password/:token", verifyResetToken);
+router.put("/reset-password/:token", resetPassword);
+
+// Rute Terproteksi
 router.get("/profile", authMiddleware, checkUserActive, getUserProfile);
 router.put("/change-password", authMiddleware, checkUserActive, changePassword);
-router.put(
-  "/first-time-password",
-  authMiddleware,
-  checkUserActive,
-  firstTimePasswordChange
-);
 
 module.exports = router;

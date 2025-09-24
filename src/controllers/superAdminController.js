@@ -4,6 +4,7 @@ const MataPelajaran = require("../models/MataPelajaran");
 const Kelas = require("../models/Kelas");
 const Jadwal = require("../models/Jadwal");
 const bcrypt = require("bcryptjs");
+const mongoose = require("mongoose"); // Tambahkan mongoose
 
 // ============= DASHBOARD =============
 exports.getDashboard = async (req, res) => {
@@ -191,6 +192,20 @@ exports.updateUser = async (req, res) => {
   }
 };
 
+exports.deleteUser = async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(req.params.id, {
+      isActive: false,
+    });
+    if (!user) {
+      return res.status(404).json({ message: "User tidak ditemukan." });
+    }
+    res.json({ message: "User berhasil dinonaktifkan." });
+  } catch (error) {
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
 exports.resetPassword = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -206,6 +221,96 @@ exports.resetPassword = async (req, res) => {
     res.json({ message: "Password berhasil direset ke identifier." });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+// ============= ACADEMIC CYCLE MANAGEMENT (BARU) =============
+exports.processPromotion = async (req, res) => {
+  const { siswaData, fromKelasId, tahunAjaran, semester } = req.body;
+
+  if (!siswaData || !fromKelasId || !tahunAjaran || !semester) {
+    return res.status(400).json({
+      message:
+        "Data siswa, kelas asal, tahun ajaran, dan semester wajib diisi.",
+    });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const fromKelas = await Kelas.findById(fromKelasId).session(session);
+    if (!fromKelas) {
+      throw new Error("Kelas asal tidak ditemukan.");
+    }
+
+    for (const data of siswaData) {
+      const { siswaId, status, toKelasId } = data;
+      const siswa = await User.findById(siswaId).session(session);
+      if (!siswa) {
+        console.warn(`Siswa dengan ID ${siswaId} tidak ditemukan.`);
+        continue;
+      }
+
+      // 1. Arsipkan kelas lama ke riwayat
+      const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
+        (riwayat) =>
+          riwayat.kelas.equals(fromKelasId) &&
+          riwayat.tahunAjaran === tahunAjaran
+      );
+
+      if (!sudahAdaDiRiwayat) {
+        siswa.riwayatKelas.push({
+          kelas: fromKelasId,
+          tahunAjaran: tahunAjaran,
+          semester: semester,
+        });
+      }
+
+      // 2. Update status berdasarkan pilihan
+      if (status === "Naik Kelas") {
+        if (!toKelasId)
+          throw new Error(
+            `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
+          );
+
+        // Pindahkan siswa ke kelas baru
+        siswa.kelas = toKelasId;
+        await Kelas.findByIdAndUpdate(
+          toKelasId,
+          { $addToSet: { siswa: siswaId } },
+          { session }
+        );
+      } else if (status === "Tinggal Kelas") {
+        // Siswa tetap di kelas yang sama, tidak perlu mengubah 'siswa.kelas'
+        // Namun, kita tetap memprosesnya agar tercatat dalam riwayat
+      } else if (status === "Lulus") {
+        siswa.kelas = null; // Tidak lagi memiliki kelas aktif
+        siswa.isActive = false; // Nonaktifkan akun siswa yang lulus
+      }
+
+      await siswa.save({ session });
+    }
+
+    // 3. Setelah semua siswa diproses, update daftar siswa di kelas asal
+    // Siswa yang naik kelas atau lulus akan dihapus dari kelas lama
+    const siswaToStay = siswaData
+      .filter((s) => s.status === "Tinggal Kelas")
+      .map((s) => s.siswaId);
+
+    fromKelas.siswa = siswaToStay;
+    await fromKelas.save({ session });
+
+    await session.commitTransaction();
+    res.json({ message: "Proses kenaikan kelas berhasil diselesaikan." });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
   }
 };
 
@@ -267,9 +372,81 @@ exports.getMataPelajaranById = async (req, res) => {
   }
 };
 
+exports.updateMataPelajaran = async (req, res) => {
+  try {
+    const mataPelajaran = await MataPelajaran.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      {
+        new: true,
+      }
+    );
+    if (!mataPelajaran) {
+      return res
+        .status(404)
+        .json({ message: "Mata pelajaran tidak ditemukan." });
+    }
+    res.json({
+      message: "Mata pelajaran berhasil diupdate.",
+      mataPelajaran,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+exports.deleteMataPelajaran = async (req, res) => {
+  try {
+    const mataPelajaran = await MataPelajaran.findByIdAndUpdate(req.params.id, {
+      isActive: false,
+    });
+    if (!mataPelajaran) {
+      return res
+        .status(404)
+        .json({ message: "Mata pelajaran tidak ditemukan." });
+    }
+    res.json({ message: "Mata pelajaran berhasil dihapus." });
+  } catch (error) {
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
 exports.assignGuruMataPelajaran = async (req, res) => {
   try {
     const { mataPelajaranId, guruId } = req.body;
+
+    const mataPelajaran = await MataPelajaran.findById(mataPelajaranId);
+    if (!mataPelajaran) {
+      return res
+        .status(404)
+        .json({ message: "Mata pelajaran tidak ditemukan." });
+    }
+
+    const guru = await User.findOne({ _id: guruId, role: "guru" });
+    if (!guru) {
+      return res.status(404).json({ message: "Guru tidak ditemukan." });
+    }
+
+    await Promise.all([
+      User.findByIdAndUpdate(guruId, {
+        $addToSet: { mataPelajaran: mataPelajaranId },
+      }),
+      MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
+        $addToSet: { guru: guruId },
+      }),
+    ]);
+
+    res.json({ message: "Guru berhasil ditugaskan ke mata pelajaran." });
+  } catch (error) {
+    console.error("Error assigning guru:", error);
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+exports.unassignGuruMataPelajaran = async (req, res) => {
+  try {
+    const { mataPelajaranId, guruId } = req.body;
+
     const mataPelajaran = await MataPelajaran.findById(mataPelajaranId);
     if (!mataPelajaran) {
       return res
@@ -280,14 +457,21 @@ exports.assignGuruMataPelajaran = async (req, res) => {
     if (!guru) {
       return res.status(404).json({ message: "Guru tidak ditemukan." });
     }
-    await User.findByIdAndUpdate(guruId, {
-      $addToSet: { mataPelajaran: mataPelajaranId },
+
+    await Promise.all([
+      User.findByIdAndUpdate(guruId, {
+        $pull: { mataPelajaran: mataPelajaranId },
+      }),
+      MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
+        $pull: { guru: guruId },
+      }),
+    ]);
+
+    res.json({
+      message: "Penugasan guru dari mata pelajaran berhasil dihapus.",
     });
-    await MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
-      $addToSet: { guru: guruId },
-    });
-    res.json({ message: "Guru berhasil diassign ke mata pelajaran." });
   } catch (error) {
+    console.error("Error unassigning guru:", error);
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
@@ -297,19 +481,15 @@ exports.createKelas = async (req, res) => {
   try {
     const { nama, tingkat, jurusan, tahunAjaran, waliKelas } = req.body;
     if (!nama || !tingkat || !jurusan || !tahunAjaran) {
-      return res
-        .status(400)
-        .json({
-          message: "Nama, tingkat, jurusan, dan tahun ajaran wajib diisi.",
-        });
+      return res.status(400).json({
+        message: "Nama, tingkat, jurusan, dan tahun ajaran wajib diisi.",
+      });
     }
     const existing = await Kelas.findOne({ nama, tahunAjaran });
     if (existing) {
-      return res
-        .status(400)
-        .json({
-          message: "Kelas dengan nama dan tahun ajaran tersebut sudah ada.",
-        });
+      return res.status(400).json({
+        message: "Kelas dengan nama dan tahun ajaran tersebut sudah ada.",
+      });
     }
     const kelas = new Kelas({
       nama,
@@ -355,6 +535,34 @@ exports.getKelasById = async (req, res) => {
       return res.status(404).json({ message: "Kelas tidak ditemukan." });
     }
     res.json(kelas);
+  } catch (error) {
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+exports.updateKelas = async (req, res) => {
+  try {
+    const kelas = await Kelas.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+    });
+    if (!kelas) {
+      return res.status(404).json({ message: "Kelas tidak ditemukan." });
+    }
+    res.json({ message: "Kelas berhasil diupdate.", kelas });
+  } catch (error) {
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+exports.deleteKelas = async (req, res) => {
+  try {
+    const kelas = await Kelas.findByIdAndUpdate(req.params.id, {
+      isActive: false,
+    });
+    if (!kelas) {
+      return res.status(404).json({ message: "Kelas tidak ditemukan." });
+    }
+    res.json({ message: "Kelas berhasil dihapus." });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
@@ -419,12 +627,10 @@ exports.createJadwal = async (req, res) => {
       ],
     });
     if (conflict) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "Jadwal bentrok dengan jadwal yang sudah ada untuk kelas atau guru.",
-        });
+      return res.status(400).json({
+        message:
+          "Jadwal bentrok dengan jadwal yang sudah ada untuk kelas atau guru.",
+      });
     }
 
     const jadwal = new Jadwal({

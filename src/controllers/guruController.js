@@ -139,11 +139,9 @@ exports.getAbsensiBySesi = async (req, res) => {
       isActive: true,
     });
     if (!jadwal) {
-      return res
-        .status(403)
-        .json({
-          message: "Anda tidak memiliki jadwal mengajar untuk kelas ini.",
-        });
+      return res.status(403).json({
+        message: "Anda tidak memiliki jadwal mengajar untuk kelas ini.",
+      });
     }
 
     const absensiRecords = await Absensi.find({
@@ -225,11 +223,9 @@ exports.inputNilai = async (req, res) => {
       isActive: true,
     });
     if (!jadwal) {
-      return res
-        .status(403)
-        .json({
-          message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
-        });
+      return res.status(403).json({
+        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+      });
     }
 
     const siswa = await User.findOne({
@@ -265,6 +261,76 @@ exports.inputNilai = async (req, res) => {
   }
 };
 
+// --- FUNGSI BARU DI SINI ---
+exports.inputNilaiMassal = async (req, res) => {
+  try {
+    const {
+      kelasId,
+      mataPelajaranId,
+      jenisPenilaian,
+      semester,
+      tahunAjaran,
+      nilaiSiswa, // Ini adalah array: [{ siswaId, nilai, deskripsi }]
+    } = req.body;
+
+    if (
+      !kelasId ||
+      !mataPelajaranId ||
+      !jenisPenilaian ||
+      !semester ||
+      !tahunAjaran ||
+      !nilaiSiswa
+    ) {
+      return res.status(400).json({ message: "Semua field wajib diisi." });
+    }
+
+    // 1. Validasi bahwa guru memang mengajar di kelas dan mapel tersebut
+    const jadwal = await Jadwal.findOne({
+      guru: req.user.id,
+      kelas: kelasId,
+      mataPelajaran: mataPelajaranId,
+      isActive: true,
+    });
+    if (!jadwal) {
+      return res.status(403).json({
+        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+      });
+    }
+
+    // 2. Siapkan operasi bulkWrite untuk efisiensi
+    const operasiNilai = nilaiSiswa.map((item) => ({
+      updateOne: {
+        filter: {
+          siswa: item.siswaId,
+          mataPelajaran: mataPelajaranId,
+          jenisPenilaian: jenisPenilaian,
+          semester: semester,
+          tahunAjaran: tahunAjaran,
+        },
+        update: {
+          $set: {
+            nilai: item.nilai,
+            deskripsi: item.deskripsi,
+            guru: req.user.id,
+            kelas: kelasId,
+          },
+        },
+        upsert: true, // Krusial: jika nilai belum ada, buat baru. Jika sudah ada, perbarui.
+      },
+    }));
+
+    // 3. Jalankan operasi jika ada data yang perlu diproses
+    if (operasiNilai.length > 0) {
+      await Nilai.bulkWrite(operasiNilai);
+    }
+
+    res.status(200).json({ message: "Semua nilai berhasil disimpan." });
+  } catch (error) {
+    console.error("Error input nilai massal:", error);
+    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
 exports.getNilaiSiswa = async (req, res) => {
   try {
     const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
@@ -276,11 +342,9 @@ exports.getNilaiSiswa = async (req, res) => {
       isActive: true,
     });
     if (!jadwal) {
-      return res
-        .status(403)
-        .json({
-          message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
-        });
+      return res.status(403).json({
+        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+      });
     }
 
     const nilai = await Nilai.find({
@@ -322,26 +386,95 @@ exports.getDetailNilaiSiswa = async (req, res) => {
 
 exports.exportNilai = async (req, res) => {
   try {
-    // Implementasi export nilai dengan model User
-    res
-      .status(501)
-      .json({
-        message: "Fungsi export belum diimplementasikan dengan model User.",
+    const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
+
+    if (!kelasId || !mataPelajaranId || !semester || !tahunAjaran) {
+      return res.status(400).json({
+        message:
+          "Semua parameter query (kelasId, mataPelajaranId, semester, tahunAjaran) wajib diisi.",
       });
+    }
+
+    const jadwal = await Jadwal.findOne({
+      guru: req.user.id,
+      kelas: kelasId,
+      mataPelajaran: mataPelajaranId,
+      isActive: true,
+    });
+    if (!jadwal) {
+      return res.status(403).json({
+        message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
+      });
+    }
+
+    const nilai = await Nilai.find({
+      kelas: kelasId,
+      mataPelajaran: mataPelajaranId,
+      semester,
+      tahunAjaran,
+    })
+      .populate("siswa", "name identifier")
+      .populate("mataPelajaran", "nama")
+      .populate("kelas", "nama");
+
+    if (nilai.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "Tidak ada data nilai untuk diekspor." });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Daftar Nilai");
+
+    worksheet.columns = [
+      { header: "Nama Siswa", key: "nama", width: 25 },
+      { header: "NIS", key: "nis", width: 20 },
+      { header: "Jenis Penilaian", key: "jenis", width: 20 },
+      { header: "Nilai", key: "nilai", width: 10 },
+      { header: "Deskripsi", key: "deskripsi", width: 30 },
+      { header: "Tanggal", key: "tanggal", width: 15 },
+    ];
+
+    nilai.forEach((item) => {
+      worksheet.addRow({
+        nama: item.siswa.name,
+        nis: item.siswa.identifier,
+        jenis: item.jenisPenilaian,
+        nilai: item.nilai,
+        deskripsi: item.deskripsi,
+        tanggal: new Date(item.tanggalPenilaian).toLocaleDateString("id-ID"),
+      });
+    });
+
+    const mapel = nilai[0]?.mataPelajaran.nama || "Nilai";
+    const kelas = nilai[0]?.kelas.nama || "Kelas";
+    const fileName = `Nilai_${mapel.replace(/\s+/g, "-")}_${kelas.replace(
+      /\s+/g,
+      "-"
+    )}.xlsx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
+
+    await workbook.xlsx.write(res);
+    res.status(200).end();
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error exporting nilai:", error);
+    res
+      .status(500)
+      .json({ message: "Terjadi kesalahan saat mengekspor nilai." });
   }
 };
 
 // ============= ANALISIS KINERJA SISWA =============
 exports.getAnalisisKinerjaSiswa = async (req, res) => {
   try {
-    // Implementasi analisis kinerja dengan model User
-    res
-      .status(501)
-      .json({
-        message: "Fungsi analisis belum diimplementasikan dengan model User.",
-      });
+    res.status(501).json({
+      message: "Fungsi analisis belum diimplementasikan.",
+    });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }

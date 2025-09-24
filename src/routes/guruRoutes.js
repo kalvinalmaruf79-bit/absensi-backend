@@ -7,12 +7,13 @@ const {
   getJadwalGuru,
   getSiswaKelas,
   inputNilai,
+  inputNilaiMassal, // Tambahkan ini
   getNilaiSiswa,
   getDetailNilaiSiswa,
   exportNilai,
   getAnalisisKinerjaSiswa,
-  getAbsensiBySesi, // Ditambahkan
-  getSiswaWaliKelas, // Ditambahkan
+  getAbsensiBySesi,
+  getSiswaWaliKelas,
 } = require("../controllers/guruController");
 
 const {
@@ -28,16 +29,18 @@ router.get("/dashboard", getDashboard);
 router.get("/jadwal", getJadwalGuru);
 
 // Absensi Management
-router.get("/absensi/sesi", getAbsensiBySesi); // Rute baru
+router.get("/absensi/sesi", getAbsensiBySesi);
 
 // Wali Kelas
-router.get("/wali-kelas/siswa", getSiswaWaliKelas); // Rute baru
+router.get("/wali-kelas/siswa", getSiswaWaliKelas);
 
 // Siswa Management
 router.get("/kelas/:kelasId/siswa", getSiswaKelas);
 
+// --- PERUBAHAN DI SINI ---
 // Nilai Management
 router.post("/nilai", inputNilai);
+router.post("/nilai/bulk", inputNilaiMassal); // Rute baru untuk input massal
 router.get("/nilai", getNilaiSiswa);
 router.get("/nilai/siswa/:siswaId", getDetailNilaiSiswa);
 router.get("/nilai/export", exportNilai);
