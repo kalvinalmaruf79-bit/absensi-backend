@@ -21,6 +21,17 @@ const tugasSchema = new mongoose.Schema(
       required: true,
     },
     deadline: { type: Date, required: true },
+    // --- PERUBAHAN DIMULAI DI SINI ---
+    semester: {
+      type: String,
+      enum: ["ganjil", "genap"],
+      required: true,
+    },
+    tahunAjaran: {
+      type: String,
+      required: true,
+    },
+    // --- PERUBAHAN SELESAI DI SINI ---
     submissions: [
       {
         siswa: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

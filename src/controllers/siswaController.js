@@ -4,8 +4,144 @@ const User = require("../models/User");
 const Nilai = require("../models/Nilai");
 const Jadwal = require("../models/Jadwal");
 const Absensi = require("../models/Absensi");
+const Notifikasi = require("../models/Notifikasi");
+const Tugas = require("../models/Tugas"); // Impor model Tugas
 
-// Dashboard siswa
+// --- FUNGSI BARU UNTUK TUGAS MENDATANG ---
+exports.getTugasMendatang = async (req, res) => {
+  try {
+    const siswa = await User.findById(req.user.id);
+    if (!siswa || !siswa.kelas) {
+      return res
+        .status(404)
+        .json({ message: "Data siswa atau kelas tidak ditemukan." });
+    }
+
+    const { limit = 5 } = req.query; // Ambil 5 tugas terdekat secara default
+
+    const tugasMendatang = await Tugas.find({
+      kelas: siswa.kelas,
+      deadline: { $gte: new Date() }, // Hanya tugas yang belum lewat deadline
+      "submissions.siswa": { $ne: siswa._id }, // Hanya tugas yang belum dikumpulkan oleh siswa
+    })
+      .sort({ deadline: 1 }) // Urutkan berdasarkan deadline terdekat
+      .limit(parseInt(limit))
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name");
+
+    res.json(tugasMendatang);
+  } catch (error) {
+    res
+      .status(500)
+      .json({
+        message: "Gagal mengambil tugas mendatang.",
+        error: error.message,
+      });
+  }
+};
+// ------------------------------------
+
+// Fungsi lainnya tetap sama...
+exports.getJadwalMendatang = async (req, res) => {
+  try {
+    const siswa = await User.findById(req.user.id);
+    if (!siswa || !siswa.kelas) {
+      return res
+        .status(404)
+        .json({ message: "Data siswa atau kelas tidak ditemukan." });
+    }
+
+    const now = new Date();
+    const hariIniIndex = now.getDay();
+    const jamSekarang = `${now.getHours().toString().padStart(2, "0")}:${now
+      .getMinutes()
+      .toString()
+      .padStart(2, "0")}`;
+
+    const daftarHari = [
+      "minggu",
+      "senin",
+      "selasa",
+      "rabu",
+      "kamis",
+      "jumat",
+      "sabtu",
+    ];
+    const hariIniNama = daftarHari[hariIniIndex];
+
+    let jadwalMendatang = await Jadwal.findOne({
+      kelas: siswa.kelas,
+      hari: hariIniNama,
+      jamMulai: { $gte: jamSekarang },
+      isActive: true,
+    })
+      .sort({ jamMulai: 1 })
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name");
+
+    if (!jadwalMendatang) {
+      for (let i = 1; i <= 6; i++) {
+        const hariBerikutnyaIndex = (hariIniIndex + i) % 7;
+        const hariBerikutnyaNama = daftarHari[hariBerikutnyaIndex];
+
+        jadwalMendatang = await Jadwal.findOne({
+          kelas: siswa.kelas,
+          hari: hariBerikutnyaNama,
+          isActive: true,
+        })
+          .sort({ jamMulai: 1 })
+          .populate("mataPelajaran", "nama kode")
+          .populate("guru", "name");
+
+        if (jadwalMendatang) {
+          break;
+        }
+      }
+    }
+
+    res.json({ jadwalMendatang: jadwalMendatang || null });
+  } catch (error) {
+    res
+      .status(500)
+      .json({
+        message: "Gagal mengambil jadwal mendatang.",
+        error: error.message,
+      });
+  }
+};
+
+exports.getNotifikasi = async (req, res) => {
+  try {
+    const { limit = 20 } = req.query;
+    const notifikasi = await Notifikasi.find({ penerima: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+    res.json(notifikasi);
+  } catch (error) {
+    res.status(500).json({ message: "Gagal mengambil notifikasi." });
+  }
+};
+
+exports.markNotifikasiAsRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const filter = { penerima: req.user.id, isRead: false };
+
+    if (id !== "all") {
+      filter._id = id;
+    }
+
+    const result = await Notifikasi.updateMany(filter, {
+      $set: { isRead: true },
+    });
+    res.json({
+      message: `${result.modifiedCount} notifikasi ditandai telah dibaca.`,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Gagal memperbarui status notifikasi." });
+  }
+};
+
 exports.getDashboard = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id).populate(
@@ -83,10 +219,9 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// Get jadwal siswa (dengan filter historis)
 exports.getJadwalSiswa = async (req, res) => {
   try {
-    const { tahunAjaran, semester } = req.query; // Tambahkan filter
+    const { tahunAjaran, semester } = req.query;
     const siswa = await User.findById(req.user.id);
     if (!siswa || siswa.role !== "siswa" || !siswa.kelas) {
       return res
@@ -94,10 +229,8 @@ exports.getJadwalSiswa = async (req, res) => {
         .json({ message: "Siswa tidak ditemukan atau belum memiliki kelas." });
     }
 
-    // Filter berdasarkan kelas aktif jika tidak ada filter waktu
     let filter = { kelas: siswa.kelas, isActive: true };
 
-    // Jika ada filter waktu, cari kelas yang sesuai dari riwayat
     if (tahunAjaran && semester) {
       const riwayat = siswa.riwayatKelas.find(
         (r) => r.tahunAjaran === tahunAjaran && r.semester === semester
@@ -107,7 +240,6 @@ exports.getJadwalSiswa = async (req, res) => {
         filter.tahunAjaran = tahunAjaran;
         filter.semester = semester;
       } else {
-        // Jika tidak ketemu di riwayat, mungkin itu kelas aktif saat ini
         filter.tahunAjaran = tahunAjaran;
         filter.semester = semester;
       }
@@ -136,10 +268,9 @@ exports.getJadwalSiswa = async (req, res) => {
   }
 };
 
-// Get nilai siswa (dengan filter historis)
 exports.getNilaiSiswa = async (req, res) => {
   try {
-    const { tahunAjaran, semester } = req.query; // Tambahkan filter
+    const { tahunAjaran, semester } = req.query;
     let filter = { siswa: req.user.id };
 
     if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
@@ -154,7 +285,6 @@ exports.getNilaiSiswa = async (req, res) => {
   }
 };
 
-// Get riwayat presensi siswa
 exports.getRiwayatPresensi = async (req, res) => {
   try {
     const presensi = await Absensi.find({ siswa: req.user.id })
@@ -172,7 +302,6 @@ exports.getRiwayatPresensi = async (req, res) => {
   }
 };
 
-// Get teman sekelas
 exports.getTemanSekelas = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id);

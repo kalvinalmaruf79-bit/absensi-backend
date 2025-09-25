@@ -33,6 +33,12 @@ const materiSchema = new mongoose.Schema(
         url: String,
       },
     ],
+    // --- FIELD BARU DIMULAI DI SINI ---
+    isPublished: {
+      type: Boolean,
+      default: true, // Materi akan langsung terlihat secara default
+    },
+    // --- FIELD BARU SELESAI DI SINI ---
   },
   { timestamps: true }
 );

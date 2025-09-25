@@ -2,7 +2,7 @@
 const PengajuanAbsensi = require("../models/PengajuanAbsensi");
 const Absensi = require("../models/Absensi");
 const User = require("../models/User");
-const Kelas = require("../models/Kelas"); // Pastikan model Kelas diimpor
+const Kelas = require("../models/Kelas");
 const fs = require("fs");
 
 // Siswa: Membuat pengajuan izin/sakit baru
@@ -10,7 +10,7 @@ exports.createPengajuan = async (req, res) => {
   try {
     const { tanggal, keterangan, alasan } = req.body;
     if (!tanggal || !keterangan || !alasan) {
-      if (req.file) fs.unlinkSync(req.file.path); // Hapus file jika validasi gagal
+      if (req.file) fs.unlinkSync(req.file.path);
       return res
         .status(400)
         .json({ message: "Tanggal, keterangan, dan alasan wajib diisi." });
@@ -54,16 +54,11 @@ exports.getAllPengajuan = async (req, res) => {
     if (status) filter.status = status;
     if (tanggal) filter.tanggal = tanggal;
 
-    // Jika user adalah wali kelas (dari middleware verifyWaliKelas),
-    // filter pengajuan hanya untuk siswa di kelas perwaliannya.
     if (req.kelasWali) {
       filter.siswa = { $in: req.kelasWali.siswa };
     } else if (req.user.role !== "super_admin") {
-      // Jika bukan super_admin dan bukan wali kelas yang terverifikasi,
-      // kembalikan array kosong untuk keamanan.
       return res.json([]);
     }
-    // Super admin akan melihat semua pengajuan tanpa filter siswa.
 
     const daftarPengajuan = await PengajuanAbsensi.find(filter)
       .populate("siswa", "name identifier kelas")
@@ -82,7 +77,7 @@ exports.getAllPengajuan = async (req, res) => {
 exports.reviewPengajuan = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body; // "disetujui" atau "ditolak"
+    const { status } = req.body;
 
     if (!["disetujui", "ditolak"].includes(status)) {
       return res
@@ -100,20 +95,15 @@ exports.reviewPengajuan = async (req, res) => {
         .json({ message: "Pengajuan ini sudah pernah ditinjau." });
     }
 
-    // Validasi: Pastikan Wali Kelas hanya meninjau siswanya
     if (req.user.role !== "super_admin") {
-      // req.kelasWali disediakan oleh middleware verifyWaliKelas
       if (!req.kelasWali) {
         return res
           .status(403)
           .json({ message: "Anda bukan wali kelas aktif." });
       }
-
-      // Cek apakah siswa yang mengajukan ada di dalam daftar siswa perwalian
       const isSiswaWali = req.kelasWali.siswa.some((idSiswa) =>
         idSiswa.equals(pengajuan.siswa)
       );
-
       if (!isSiswaWali) {
         return res
           .status(403)
@@ -125,13 +115,34 @@ exports.reviewPengajuan = async (req, res) => {
     pengajuan.ditinjauOleh = req.user.id;
     await pengajuan.save();
 
-    // AKSI OTOMATIS SAAT DISETUJUI
+    // PERBAIKAN LOGIKA: Menggunakan upsert untuk membuat atau memperbarui catatan absensi
     if (status === "disetujui") {
-      await Absensi.updateMany(
-        { siswa: pengajuan.siswa, tanggal: pengajuan.tanggal },
-        // Ganti status 'alpa' menjadi keterangan dari pengajuan (izin/sakit)
-        { $set: { keterangan: pengajuan.keterangan } }
-      );
+      // Cari semua jadwal siswa pada hari pengajuan
+      const jadwalSiswaHariIni = await Jadwal.find({
+        kelas: req.kelasWali.id, // ID kelas dari middleware
+        hari: new Date(pengajuan.tanggal)
+          .toLocaleDateString("id-ID", { weekday: "long" })
+          .toLowerCase(),
+      });
+
+      for (const jadwal of jadwalSiswaHariIni) {
+        await Absensi.findOneAndUpdate(
+          {
+            siswa: pengajuan.siswa,
+            jadwal: jadwal._id,
+            tanggal: pengajuan.tanggal,
+          },
+          {
+            $set: {
+              keterangan: pengajuan.keterangan,
+              // Data dummy karena tidak ada sesi check-in
+              sesiPresensi: new mongoose.Types.ObjectId(),
+              lokasiSiswa: { latitude: 0, longitude: 0 },
+            },
+          },
+          { upsert: true } // Membuat dokumen baru jika tidak ditemukan
+        );
+      }
     }
 
     res.json({

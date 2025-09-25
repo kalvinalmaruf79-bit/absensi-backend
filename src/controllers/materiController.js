@@ -5,10 +5,8 @@ const path = require("path");
 
 exports.createMateri = async (req, res) => {
   try {
-    // Ambil data yang sudah divalidasi dan diparsing
     const { judul, deskripsi, mataPelajaran, kelas, parsedLinks } = req.body;
 
-    // Validasi input dasar
     if (!judul || !deskripsi || !mataPelajaran || !kelas) {
       if (req.files) {
         req.files.forEach((file) => fs.unlinkSync(file.path));
@@ -16,7 +14,6 @@ exports.createMateri = async (req, res) => {
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
 
-    // Ambil data file dari req.files yang disediakan multer
     const files = req.files?.map((file) => ({
       fileName: file.originalname,
       filePath: file.path,
@@ -30,14 +27,13 @@ exports.createMateri = async (req, res) => {
       kelas,
       guru: req.user.id,
       files: files || [],
-      links: parsedLinks, // Gunakan data links yang sudah diparsing
+      links: parsedLinks,
     });
 
     await materi.save();
     res.status(201).json({ message: "Materi berhasil dibuat.", materi });
   } catch (error) {
     console.error("Error creating materi:", error);
-    // Hapus file jika terjadi error saat menyimpan ke database
     if (req.files) {
       req.files.forEach((file) => fs.unlinkSync(file.path));
     }
@@ -46,7 +42,8 @@ exports.createMateri = async (req, res) => {
       .json({ message: "Gagal membuat materi.", error: error.message });
   }
 };
-// Siswa & Guru: Mendapatkan materi berdasarkan kelas dan mapel
+
+// Siswa & Guru: Mendapatkan materi (DIPERBARUI)
 exports.getMateri = async (req, res) => {
   try {
     const { kelasId, mataPelajaranId } = req.query;
@@ -55,10 +52,21 @@ exports.getMateri = async (req, res) => {
         message: "Parameter kelasId dan mataPelajaranId wajib diisi.",
       });
     }
-    const materi = await Materi.find({
+
+    // --- LOGIKA BARU DIMULAI DI SINI ---
+    let filter = {
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
-    })
+    };
+
+    // Jika user adalah siswa, hanya tampilkan materi yang sudah di-publish
+    if (req.user.role === "siswa") {
+      filter.isPublished = true;
+    }
+    // Guru bisa melihat semua materi (published dan draft)
+    // --- LOGIKA BARU SELESAI DI SINI ---
+
+    const materi = await Materi.find(filter)
       .populate("guru", "name")
       .sort({ createdAt: -1 });
     res.json(materi);
@@ -68,7 +76,39 @@ exports.getMateri = async (req, res) => {
   }
 };
 
-// Guru: Update materi (ENDPOINT BARU)
+// --- FUNGSI BARU UNTUK TOGGLE PUBLISH ---
+exports.togglePublishMateri = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const materi = await Materi.findById(id);
+
+    if (!materi) {
+      return res.status(404).json({ message: "Materi tidak ditemukan." });
+    }
+
+    if (materi.guru.toString() !== req.user.id) {
+      return res
+        .status(403)
+        .json({ message: "Anda tidak berhak mengubah materi ini." });
+    }
+
+    // Balikkan status isPublished
+    materi.isPublished = !materi.isPublished;
+    await materi.save();
+
+    res.json({
+      message: `Materi berhasil di-${
+        materi.isPublished ? "terbitkan" : "sembunyikan"
+      }.`,
+      materi,
+    });
+  } catch (error) {
+    console.error("Error toggling publish materi:", error);
+    res.status(500).json({ message: "Gagal mengubah status publikasi." });
+  }
+};
+
+// Guru: Update materi
 exports.updateMateri = async (req, res) => {
   try {
     const { id } = req.params;
@@ -97,7 +137,7 @@ exports.updateMateri = async (req, res) => {
   }
 };
 
-// Guru: Hapus materi (ENDPOINT BARU)
+// Guru: Hapus materi
 exports.deleteMateri = async (req, res) => {
   try {
     const { id } = req.params;
@@ -113,7 +153,6 @@ exports.deleteMateri = async (req, res) => {
         .json({ message: "Anda tidak berhak menghapus materi ini." });
     }
 
-    // Hapus file fisik dari server
     if (materi.files && materi.files.length > 0) {
       materi.files.forEach((file) => {
         if (fs.existsSync(file.filePath)) {

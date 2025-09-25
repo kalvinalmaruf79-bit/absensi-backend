@@ -7,8 +7,9 @@ const {
   getUserProfile,
   changePassword,
   forgotPassword,
-  verifyResetToken, // Endpoint verifikasi
+  verifyResetToken,
   resetPassword,
+  registerDevice, // Impor fungsi baru
 } = require("../controllers/authController");
 
 const {
@@ -20,12 +21,20 @@ const {
 router.post("/login", loginUser);
 router.post("/forgot-password", forgotPassword);
 
-// BEST PRACTICE: Pisahkan endpoint GET untuk verifikasi dan PUT untuk submit
 router.get("/reset-password/:token", verifyResetToken);
 router.put("/reset-password/:token", resetPassword);
 
 // Rute Terproteksi
 router.get("/profile", authMiddleware, checkUserActive, getUserProfile);
 router.put("/change-password", authMiddleware, checkUserActive, changePassword);
+
+// --- RUTE BARU UNTUK REGISTRASI PERANGKAT ---
+router.post(
+  "/register-device",
+  authMiddleware,
+  checkUserActive,
+  registerDevice
+);
+// ------------------------------------------
 
 module.exports = router;

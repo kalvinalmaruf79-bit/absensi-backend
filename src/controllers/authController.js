@@ -1,16 +1,33 @@
 // controllers/authController.js
 const User = require("../models/User");
-const bcrypt = require("bcryptjs");
+const bcrypt = require("bcryptjs"); // PERBAIKAN KRITIS: Mengimpor library bcryptjs
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const sendEmail = require("../utils/sendEmail");
 const fs = require("fs");
 const path = require("path");
 
-/* ================================================================================
-  FUNGSI LOGIN, PROFILE, & CHANGE PASSWORD (TIDAK ADA PERUBAHAN)
-================================================================================
-*/
+// --- FUNGSI BARU UNTUK REGISTRASI PERANGKAT ---
+exports.registerDevice = async (req, res) => {
+  try {
+    const { deviceToken } = req.body;
+    if (!deviceToken) {
+      return res.status(400).json({ message: "Device token wajib diisi." });
+    }
+
+    const userId = req.user.id;
+    // Gunakan $addToSet untuk menghindari duplikasi token
+    await User.findByIdAndUpdate(userId, {
+      $addToSet: { deviceTokens: deviceToken },
+    });
+
+    res.json({ message: "Perangkat berhasil didaftarkan." });
+  } catch (error) {
+    res.status(500).json({ message: "Gagal mendaftarkan perangkat." });
+  }
+};
+// ------------------------------------------
+
 exports.loginUser = async (req, res) => {
   try {
     const { identifier, password } = req.body;
@@ -88,19 +105,10 @@ exports.changePassword = async (req, res) => {
   }
 };
 
-/* ================================================================================
-  ALUR RESET PASSWORD (BEST PRACTICE)
-================================================================================
-*/
-
-/**
- * @summary Langkah 1: Meminta link reset password.
- */
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
   const user = await User.findOne({ email });
 
-  // Respon ambigu untuk mencegah email enumeration attack
   if (!user) {
     return res.json({
       message: "Jika email terdaftar, link reset akan dikirim.",
@@ -110,20 +118,16 @@ exports.forgotPassword = async (req, res) => {
   try {
     const resetToken = crypto.randomBytes(20).toString("hex");
 
-    // Hash token sebelum disimpan ke DB
     user.resetPasswordToken = crypto
       .createHash("sha256")
       .update(resetToken)
       .digest("hex");
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // Token berlaku 10 menit
+    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000;
 
     await user.save({ validateBeforeSave: false });
 
-    // BEST PRACTICE: Link mengarah ke FRONTEND, bukan backend/API
-    // Pastikan Anda memiliki variabel FRONTEND_URL di file .env Anda
     const resetURL = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
 
-    // Baca dan kustomisasi template email
     const templatePath = path.join(
       __dirname,
       "../templates/resetPassword.html"
@@ -131,7 +135,6 @@ exports.forgotPassword = async (req, res) => {
     let htmlTemplate = fs.readFileSync(templatePath, "utf-8");
     htmlTemplate = htmlTemplate.replace("{{resetURL}}", resetURL);
 
-    // Kirim email
     await sendEmail({
       email: user.email,
       subject: "Reset Password Akun Sistem Akademik",
@@ -143,7 +146,6 @@ exports.forgotPassword = async (req, res) => {
     });
   } catch (error) {
     console.error("Error pada fungsi forgotPassword:", error);
-    // Rollback token jika pengiriman email gagal
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
     await user.save({ validateBeforeSave: false });
@@ -151,9 +153,6 @@ exports.forgotPassword = async (req, res) => {
   }
 };
 
-/**
- * @summary Langkah 2: Frontend memverifikasi token dari URL.
- */
 exports.verifyResetToken = async (req, res) => {
   try {
     const hashedToken = crypto
@@ -178,9 +177,6 @@ exports.verifyResetToken = async (req, res) => {
   }
 };
 
-/**
- * @summary Langkah 3: Frontend mengirim password baru setelah token diverifikasi.
- */
 exports.resetPassword = async (req, res) => {
   try {
     const hashedToken = crypto
@@ -203,7 +199,6 @@ exports.resetPassword = async (req, res) => {
       return res.status(400).json({ message: "Password baru wajib diisi." });
     }
 
-    // Update password dan hapus token
     user.password = await bcrypt.hash(req.body.password, 10);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;

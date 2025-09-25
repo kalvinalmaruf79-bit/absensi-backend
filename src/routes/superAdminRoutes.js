@@ -1,9 +1,12 @@
 // routes/superAdminRoutes.js
 const express = require("express");
 const router = express.Router();
+const createUploader = require("../middleware/uploadMiddleware");
 
 const {
   getDashboard,
+  getSettings,
+  updateSettings,
   createGuru,
   createSiswa,
   getAllUsers,
@@ -11,7 +14,9 @@ const {
   updateUser,
   deleteUser,
   resetPassword,
-  processPromotion, // Tambahkan ini
+  importUsers,
+  getActivityReport,
+  processPromotion,
   createMataPelajaran,
   getAllMataPelajaran,
   getMataPelajaranById,
@@ -36,22 +41,34 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
+// PERBAIKAN: Menggunakan array MIME type yang spesifik dan benar untuk file Excel
+const excelUploader = createUploader("imports", 5, [
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // MIME type standar untuk .xlsx
+]);
+
 router.use(authMiddleware, verifySuperAdmin, checkUserActive);
 
 // Dashboard
 router.get("/dashboard", getDashboard);
 
+// Settings Management
+router.get("/settings", getSettings);
+router.put("/settings", updateSettings);
+
+// Reports Management
+router.get("/reports/activity", getActivityReport);
+
 // User Management
 router.post("/users/guru", createGuru);
 router.post("/users/siswa", createSiswa);
+router.post("/users/import", excelUploader.single("file"), importUsers);
 router.get("/users", getAllUsers);
 router.put("/users/:id/reset-password", resetPassword);
 router.get("/users/:id", getUserById);
 router.put("/users/:id", updateUser);
 router.delete("/users/:id", deleteUser);
 
-// --- PERUBAHAN DI SINI ---
-// Academic Cycle Management (BARU)
+// Academic Cycle Management
 router.post("/academic/promote", processPromotion);
 
 // Mata Pelajaran Management

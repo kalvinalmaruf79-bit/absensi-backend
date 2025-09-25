@@ -2,13 +2,16 @@
 const express = require("express");
 const router = express.Router();
 
-// Import semua function yang dibutuhkan
 const {
   getDashboard,
   getJadwalSiswa,
   getNilaiSiswa,
   getRiwayatPresensi,
   getTemanSekelas,
+  getNotifikasi,
+  markNotifikasiAsRead,
+  getJadwalMendatang,
+  getTugasMendatang, // Impor fungsi baru
 } = require("../controllers/siswaController");
 
 const {
@@ -17,14 +20,22 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
-// Semua route memerlukan Siswa access
 router.use(authMiddleware, verifySiswa, checkUserActive);
 
 // Dashboard & Profile
 router.get("/dashboard", getDashboard);
 
+// Notifikasi
+router.get("/notifikasi", getNotifikasi);
+router.patch("/notifikasi/:id/read", markNotifikasiAsRead);
+
 // Jadwal
 router.get("/jadwal", getJadwalSiswa);
+router.get("/jadwal/mendatang", getJadwalMendatang);
+
+// --- RUTE BARU UNTUK TUGAS MENDATANG ---
+router.get("/tugas/mendatang", getTugasMendatang);
+// ------------------------------------
 
 // Nilai
 router.get("/nilai", getNilaiSiswa);

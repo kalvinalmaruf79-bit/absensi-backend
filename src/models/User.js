@@ -13,8 +13,6 @@ const userSchema = new mongoose.Schema(
       required: true,
     },
 
-    // --- PERUBAHAN DIMULAI DI SINI ---
-
     // Khusus untuk siswa: Kelas aktif saat ini
     kelas: {
       type: mongoose.Schema.Types.ObjectId,
@@ -24,7 +22,7 @@ const userSchema = new mongoose.Schema(
       },
     },
 
-    // BARU: Riwayat kelas untuk siswa
+    // Riwayat kelas untuk siswa
     riwayatKelas: [
       {
         kelas: { type: mongoose.Schema.Types.ObjectId, ref: "Kelas" },
@@ -33,8 +31,6 @@ const userSchema = new mongoose.Schema(
       },
     ],
 
-    // --- PERUBAHAN SELESAI DI SINI ---
-
     // Khusus untuk guru
     mataPelajaran: [
       {
@@ -42,6 +38,15 @@ const userSchema = new mongoose.Schema(
         ref: "MataPelajaran",
       },
     ],
+
+    // --- FIELD BARU DIMULAI DI SINI ---
+    // Menyimpan token untuk push notification
+    deviceTokens: [
+      {
+        type: String,
+      },
+    ],
+    // --- FIELD BARU SELESAI DI SINI ---
 
     // Status akun
     isActive: { type: Boolean, default: true },

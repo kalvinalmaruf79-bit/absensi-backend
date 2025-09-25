@@ -3,8 +3,151 @@ const User = require("../models/User");
 const MataPelajaran = require("../models/MataPelajaran");
 const Kelas = require("../models/Kelas");
 const Jadwal = require("../models/Jadwal");
+const Settings = require("../models/Settings");
+const Tugas = require("../models/Tugas"); // Impor model Tugas
+const Materi = require("../models/Materi"); // Impor model Materi
+const Nilai = require("../models/Nilai"); // Impor model Nilai
+const SesiPresensi = require("../models/SesiPresensi"); // Impor model SesiPresensi
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
+const ExcelJS = require("exceljs");
+const fs = require("fs");
+
+// ============= PENGATURAN APLIKASI =============
+exports.getSettings = async (req, res) => {
+  try {
+    const settings = await Settings.getSettings();
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ message: "Gagal mengambil pengaturan aplikasi." });
+  }
+};
+
+exports.updateSettings = async (req, res) => {
+  try {
+    const { namaSekolah, semesterAktif, tahunAjaranAktif } = req.body;
+    const settings = await Settings.findOneAndUpdate(
+      { key: "global-settings" },
+      { $set: { namaSekolah, semesterAktif, tahunAjaranAktif } },
+      { new: true, upsert: true }
+    );
+    res.json({ message: "Pengaturan berhasil diperbarui.", settings });
+  } catch (error) {
+    res.status(500).json({ message: "Gagal memperbarui pengaturan." });
+  }
+};
+
+// ============= LAPORAN (BARU) =============
+exports.getActivityReport = async (req, res) => {
+  try {
+    const { startDate, endDate, export: exportToExcel } = req.query;
+    let dateFilter = {};
+
+    if (startDate && endDate) {
+      dateFilter.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
+    const pipeline = [
+      {
+        $match: {
+          isActive: true,
+          role: "guru",
+        },
+      },
+      {
+        $lookup: {
+          from: "tugas",
+          localField: "_id",
+          foreignField: "guru",
+          pipeline: [{ $match: dateFilter }],
+          as: "tugasDibuat",
+        },
+      },
+      {
+        $lookup: {
+          from: "materis",
+          localField: "_id",
+          foreignField: "guru",
+          pipeline: [{ $match: dateFilter }],
+          as: "materiDibuat",
+        },
+      },
+      {
+        $lookup: {
+          from: "nilais",
+          localField: "_id",
+          foreignField: "guru",
+          pipeline: [{ $match: dateFilter }],
+          as: "nilaiDimasukkan",
+        },
+      },
+      {
+        $lookup: {
+          from: "sesipresensis",
+          localField: "_id",
+          foreignField: "dibuatOleh",
+          pipeline: [{ $match: dateFilter }],
+          as: "sesiPresensi",
+        },
+      },
+      {
+        $project: {
+          name: 1,
+          identifier: 1,
+          email: 1,
+          totalTugas: { $size: "$tugasDibuat" },
+          totalMateri: { $size: "$materiDibuat" },
+          totalInputNilai: { $size: "$nilaiDimasukkan" },
+          totalSesiPresensi: { $size: "$sesiPresensi" },
+        },
+      },
+      {
+        $sort: {
+          name: 1,
+        },
+      },
+    ];
+
+    const reportData = await User.aggregate(pipeline);
+
+    if (exportToExcel === "true") {
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Laporan Aktivitas Guru");
+      worksheet.columns = [
+        { header: "Nama Guru", key: "name", width: 30 },
+        { header: "NIP", key: "identifier", width: 20 },
+        { header: "Email", key: "email", width: 30 },
+        { header: "Materi Dibuat", key: "totalMateri", width: 15 },
+        { header: "Tugas Dibuat", key: "totalTugas", width: 15 },
+        { header: "Input Nilai", key: "totalInputNilai", width: 15 },
+        { header: "Sesi Presensi", key: "totalSesiPresensi", width: 15 },
+      ];
+
+      reportData.forEach((data) => worksheet.addRow(data));
+
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=Laporan-Aktivitas-Guru.xlsx`
+      );
+      await workbook.xlsx.write(res);
+      return res.status(200).end();
+    }
+
+    res.json(reportData);
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal menghasilkan laporan aktivitas.",
+      error: error.message,
+    });
+  }
+};
 
 // ============= DASHBOARD =============
 exports.getDashboard = async (req, res) => {
@@ -23,7 +166,7 @@ exports.getDashboard = async (req, res) => {
       data: {
         totalGuru,
         totalSiswa,
-        totalPengguna: totalGuru + totalSiswa + 1, // +1 untuk superadmin
+        totalPengguna: totalGuru + totalSiswa + 1,
         totalMataPelajaran,
         totalKelas,
         totalJadwal,
@@ -35,6 +178,122 @@ exports.getDashboard = async (req, res) => {
 };
 
 // ============= USER MANAGEMENT =============
+exports.importUsers = async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "File Excel tidak ditemukan." });
+  }
+
+  const filePath = req.file.path;
+  const workbook = new ExcelJS.Workbook();
+  const report = {
+    berhasil: 0,
+    gagal: 0,
+    errors: [],
+  };
+
+  try {
+    await workbook.xlsx.readFile(filePath);
+    const worksheet = workbook.getWorksheet(1);
+    const bulkOps = [];
+    const identifiers = new Set();
+    const emails = new Set();
+
+    const kelasCache = new Map();
+    const semuaKelas = await Kelas.find({}).select("nama _id");
+    semuaKelas.forEach((k) => kelasCache.set(k.nama.toLowerCase(), k._id));
+
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+      const row = worksheet.getRow(rowNumber);
+      const name = row.getCell(1).value?.toString().trim();
+      const email = row.getCell(2).value?.toString().trim();
+      const identifier = row.getCell(3).value?.toString().trim();
+      const role = row.getCell(4).value?.toString().trim().toLowerCase();
+      const kelasNama = row.getCell(5).value?.toString().trim();
+
+      if (!name || !email || !identifier || !role) {
+        report.gagal++;
+        report.errors.push(
+          `Baris ${rowNumber}: Data tidak lengkap (nama, email, identifier, role wajib diisi).`
+        );
+        continue;
+      }
+      if (!["siswa", "guru"].includes(role)) {
+        report.gagal++;
+        report.errors.push(
+          `Baris ${rowNumber}: Role tidak valid, harus 'siswa' atau 'guru'.`
+        );
+        continue;
+      }
+      if (identifiers.has(identifier) || emails.has(email)) {
+        report.gagal++;
+        report.errors.push(
+          `Baris ${rowNumber}: Email atau Identifier duplikat di dalam file.`
+        );
+        continue;
+      }
+      identifiers.add(identifier);
+      emails.add(email);
+
+      let kelasId = null;
+      if (role === "siswa") {
+        if (!kelasNama) {
+          report.gagal++;
+          report.errors.push(
+            `Baris ${rowNumber}: Nama kelas wajib diisi untuk siswa.`
+          );
+          continue;
+        }
+        kelasId = kelasCache.get(kelasNama.toLowerCase());
+        if (!kelasId) {
+          report.gagal++;
+          report.errors.push(
+            `Baris ${rowNumber}: Kelas '${kelasNama}' tidak ditemukan.`
+          );
+          continue;
+        }
+      }
+
+      const hashedPassword = await bcrypt.hash(identifier, 10);
+
+      bulkOps.push({
+        updateOne: {
+          filter: { $or: [{ email }, { identifier }] },
+          update: {
+            $setOnInsert: {
+              name,
+              email,
+              identifier,
+              password: hashedPassword,
+              role,
+              kelas: role === "siswa" ? kelasId : undefined,
+              isPasswordDefault: true,
+            },
+          },
+          upsert: true,
+        },
+      });
+    }
+
+    if (bulkOps.length > 0) {
+      const result = await User.bulkWrite(bulkOps);
+      report.berhasil = result.upsertedCount;
+    }
+
+    fs.unlinkSync(filePath);
+
+    res.status(200).json({
+      message: "Proses impor selesai.",
+      report,
+    });
+  } catch (error) {
+    fs.unlinkSync(filePath);
+    res.status(500).json({
+      message: "Terjadi kesalahan saat memproses file Excel.",
+      error: error.message,
+    });
+  }
+};
+
 exports.createSiswa = async (req, res) => {
   try {
     const { name, email, identifier, kelas, password } = req.body;
@@ -192,10 +451,6 @@ exports.updateUser = async (req, res) => {
   }
 };
 
-/**
- * @summary Menonaktifkan user dan membersihkan relasi data (mis: dari daftar siswa kelas)
- * @description Menggunakan transaksi untuk memastikan operasi atomik.
- */
 exports.deleteUser = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -209,10 +464,8 @@ exports.deleteUser = async (req, res) => {
       return res.status(404).json({ message: "User tidak ditemukan." });
     }
 
-    // 1. Menonaktifkan user
     user.isActive = false;
 
-    // 2. Jika user adalah siswa, hapus dari daftar siswa di kelasnya
     if (user.role === "siswa" && user.kelas) {
       await Kelas.findByIdAndUpdate(
         user.kelas,

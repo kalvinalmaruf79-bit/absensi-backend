@@ -1,22 +1,92 @@
 // src/controllers/tugasController.js
 const Tugas = require("../models/Tugas");
-const Nilai = require("../models/Nilai"); // Tambahkan ini
+const Nilai = require("../models/Nilai");
+const User = require("../models/User");
+const Notifikasi = require("../models/Notifikasi");
+const sendPushNotification = require("../utils/sendPushNotification"); // Impor utility baru
 const mongoose = require("mongoose");
 const fs = require("fs");
+
+// Helper untuk membuat notifikasi di database
+const createBulkNotifikasi = async (
+  penerimaIds,
+  tipe,
+  judul,
+  pesan,
+  resourceId
+) => {
+  const notifikasi = penerimaIds.map((penerima) => ({
+    penerima,
+    tipe,
+    judul,
+    pesan,
+    resourceId,
+  }));
+  if (notifikasi.length > 0) {
+    await Notifikasi.insertMany(notifikasi);
+  }
+};
 
 // Guru: Membuat tugas baru
 exports.createTugas = async (req, res) => {
   try {
-    const { judul, deskripsi, mataPelajaran, kelas, deadline } = req.body;
+    const {
+      judul,
+      deskripsi,
+      mataPelajaran,
+      kelas,
+      deadline,
+      semester,
+      tahunAjaran,
+    } = req.body;
+
+    if (!semester || !tahunAjaran) {
+      return res
+        .status(400)
+        .json({ message: "Semester dan Tahun Ajaran wajib diisi." });
+    }
+
     const tugas = new Tugas({
       judul,
       deskripsi,
       mataPelajaran,
       kelas,
       deadline,
+      semester,
+      tahunAjaran,
       guru: req.user.id,
     });
     await tugas.save();
+
+    // Ambil data siswa beserta deviceTokens
+    const siswaDiKelas = await User.find({
+      kelas: kelas,
+      role: "siswa",
+    }).select("_id deviceTokens");
+
+    const siswaIds = siswaDiKelas.map((s) => s._id);
+    const playerIds = siswaDiKelas.flatMap((s) => s.deviceTokens);
+
+    // Kirim notifikasi ke database (untuk riwayat)
+    await createBulkNotifikasi(
+      siswaIds,
+      "tugas_baru",
+      `Tugas Baru: ${judul}`,
+      "Sebuah tugas baru telah ditambahkan.",
+      tugas._id
+    );
+
+    // KIRIM PUSH NOTIFICATION (FIRE-AND-FORGET)
+    sendPushNotification(
+      playerIds,
+      `Tugas Baru: ${judul}`,
+      "Cek tugas baru di aplikasi sekarang!",
+      {
+        type: "tugas_baru",
+        resourceId: tugas._id.toString(),
+      }
+    );
+
     res.status(201).json({ message: "Tugas berhasil dibuat.", tugas });
   } catch (error) {
     res.status(500).json({ message: "Gagal membuat tugas." });
@@ -46,20 +116,20 @@ exports.submitTugas = async (req, res) => {
     }
 
     const submission = {
-      _id: new mongoose.Types.ObjectId(), // Generate ID untuk sub-dokumen
+      _id: new mongoose.Types.ObjectId(),
       siswa: req.user.id,
       filePath: req.file.path,
       fileName: req.file.originalname,
     };
 
     const tugas = await Tugas.findOneAndUpdate(
-      { _id: id, "submissions.siswa": { $ne: req.user.id } }, // Pastikan siswa belum submit
+      { _id: id, "submissions.siswa": { $ne: req.user.id } },
       { $push: { submissions: submission } },
       { new: true }
     );
 
     if (!tugas) {
-      fs.unlinkSync(req.file.path); // Hapus file jika gagal submit (misal: sudah pernah submit)
+      fs.unlinkSync(req.file.path);
       return res.status(400).json({
         message:
           "Gagal mengumpulkan tugas. Anda mungkin sudah pernah mengumpulkan.",
@@ -84,7 +154,6 @@ exports.getTugasSubmissions = async (req, res) => {
     if (!tugas) {
       return res.status(404).json({ message: "Tugas tidak ditemukan." });
     }
-    // Pastikan guru yang mengakses adalah guru yang membuat tugas
     if (tugas.guru.toString() !== req.user.id) {
       return res
         .status(403)
@@ -107,7 +176,6 @@ exports.gradeSubmission = async (req, res) => {
       return res.status(400).json({ message: "Nilai wajib diisi." });
     }
 
-    // Cari tugas yang berisi submission yang sesuai
     const tugas = await Tugas.findOne({
       "submissions._id": submissionId,
       guru: req.user.id,
@@ -119,42 +187,54 @@ exports.gradeSubmission = async (req, res) => {
       });
     }
 
-    // Dapatkan submission yang spesifik
     const submission = tugas.submissions.id(submissionId);
     if (!submission) {
       return res.status(404).json({ message: "Submission tidak ditemukan." });
     }
 
-    // Update nilai dan feedback di dalam tugas
     submission.nilai = nilai;
     submission.feedback = feedback;
     await tugas.save();
 
-    // **LOGIKA BARU: Simpan nilai ke koleksi Nilai**
-    // Menggunakan updateOne dengan upsert: jika sudah ada nilai tugas yg sama, akan diupdate. Jika belum, akan dibuat.
-    await Nilai.updateOne(
+    const nilaiRecord = await Nilai.findOneAndUpdate(
       {
         siswa: submission.siswa,
         mataPelajaran: tugas.mataPelajaran,
-        // Gunakan ID tugas sebagai pengenal unik untuk jenis penilaian tugas
-        // Ini mencegah duplikasi jika guru menilai ulang
         jenisPenilaian: "tugas",
-        deskripsi: `Tugas: ${tugas.judul}`, // Deskripsi bisa disesuaikan
-        // Tambahkan filter lain jika perlu untuk memastikan keunikan, misal semester & tahun ajaran jika ada di model Tugas
+        deskripsi: `Tugas: ${tugas.judul}`,
+        semester: tugas.semester,
+        tahunAjaran: tugas.tahunAjaran,
       },
       {
         $set: {
           nilai: nilai,
           guru: req.user.id,
           kelas: tugas.kelas,
-          // Anda perlu menambahkan semester dan tahunAjaran ke model Tugas jika ingin ini lebih akurat
-          // Untuk sekarang, kita asumsikan ini diisi manual nanti atau diambil dari data lain
-          semester: "ganjil", // Contoh, sebaiknya diambil dari data Tugas
-          tahunAjaran: "2025/2026", // Contoh, sebaiknya diambil dari data Tugas
         },
       },
-      { upsert: true } // Opsi ini krusial
+      { upsert: true, new: true }
     );
+
+    // Buat notifikasi di database
+    const notif = new Notifikasi({
+      penerima: submission.siswa,
+      tipe: "nilai_baru",
+      judul: `Nilai Tugas: ${tugas.judul}`,
+      pesan: `Anda mendapatkan nilai ${nilai} untuk tugas ini.`,
+      resourceId: nilaiRecord._id,
+    });
+    await notif.save();
+
+    // KIRIM PUSH NOTIFICATION
+    const siswa = await User.findById(submission.siswa).select("deviceTokens");
+    if (siswa && siswa.deviceTokens) {
+      sendPushNotification(
+        siswa.deviceTokens,
+        `Nilai Tugas: ${tugas.judul}`,
+        `Anda mendapatkan nilai ${nilai}. Lihat detailnya di aplikasi.`,
+        { type: "nilai_baru", resourceId: nilaiRecord._id.toString() }
+      );
+    }
 
     res.json({ message: "Nilai berhasil disimpan dan disentralisasi." });
   } catch (error) {
