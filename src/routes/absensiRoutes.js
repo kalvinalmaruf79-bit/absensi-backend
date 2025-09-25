@@ -14,8 +14,15 @@ const {
   verifySiswa,
 } = require("../middleware/authMiddleware");
 
+// Impor rute pengajuan yang baru
+const pengajuanRoutes = require("./pengajuanAbsensiRoutes");
+
 // Siswa check-in
 router.post("/check-in", authMiddleware, verifySiswa, checkIn);
+
+// Gunakan rute pengajuan dengan prefix '/pengajuan'
+// Sehingga endpoint-nya menjadi /api/absensi/pengajuan/...
+router.use("/pengajuan", pengajuanRoutes);
 
 // Admin/Guru management
 router.get("/riwayat", authMiddleware, verifyAdminOrGuru, getRiwayatAbsensi);

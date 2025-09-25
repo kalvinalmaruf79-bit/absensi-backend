@@ -1,6 +1,7 @@
 // middleware/authMiddleware.js
 const jwt = require("jsonwebtoken");
 const User = require("../models/User"); // Diubah ke User
+const Kelas = require("../models/Kelas"); // Tambahkan model Kelas
 
 const authMiddleware = (req, res, next) => {
   const token = req.header("Authorization");
@@ -12,11 +13,9 @@ const authMiddleware = (req, res, next) => {
   try {
     const tokenParts = token.split(" ");
     if (tokenParts.length !== 2 || tokenParts[0] !== "Bearer") {
-      return res
-        .status(400)
-        .json({
-          message: "Format token tidak valid. Gunakan format 'Bearer <token>'.",
-        });
+      return res.status(400).json({
+        message: "Format token tidak valid. Gunakan format 'Bearer <token>'.",
+      });
     }
     const decoded = jwt.verify(tokenParts[1], process.env.JWT_SECRET);
     req.user = { id: decoded.id, role: decoded.role };
@@ -30,46 +29,38 @@ const authMiddleware = (req, res, next) => {
 
 const verifySuperAdmin = (req, res, next) => {
   if (req.user.role !== "super_admin") {
-    return res
-      .status(403)
-      .json({
-        message:
-          "Akses ditolak: Hanya Super Admin yang dapat mengakses fitur ini.",
-      });
+    return res.status(403).json({
+      message:
+        "Akses ditolak: Hanya Super Admin yang dapat mengakses fitur ini.",
+    });
   }
   next();
 };
 
 const verifyGuru = (req, res, next) => {
   if (req.user.role !== "guru") {
-    return res
-      .status(403)
-      .json({
-        message: "Akses ditolak: Hanya Guru yang dapat mengakses fitur ini.",
-      });
+    return res.status(403).json({
+      message: "Akses ditolak: Hanya Guru yang dapat mengakses fitur ini.",
+    });
   }
   next();
 };
 
 const verifySiswa = (req, res, next) => {
   if (req.user.role !== "siswa") {
-    return res
-      .status(403)
-      .json({
-        message: "Akses ditolak: Hanya Siswa yang dapat mengakses fitur ini.",
-      });
+    return res.status(403).json({
+      message: "Akses ditolak: Hanya Siswa yang dapat mengakses fitur ini.",
+    });
   }
   next();
 };
 
 const verifyAdminOrGuru = (req, res, next) => {
   if (!["super_admin", "guru"].includes(req.user.role)) {
-    return res
-      .status(403)
-      .json({
-        message:
-          "Akses ditolak: Hanya Super Admin atau Guru yang dapat mengakses fitur ini.",
-      });
+    return res.status(403).json({
+      message:
+        "Akses ditolak: Hanya Super Admin atau Guru yang dapat mengakses fitur ini.",
+    });
   }
   next();
 };
@@ -83,6 +74,33 @@ const verifyAnyUser = (req, res, next) => {
   next();
 };
 
+// **MIDDLEWARE BARU UNTUK WALI KELAS**
+const verifyWaliKelas = async (req, res, next) => {
+  try {
+    // Super admin dapat melewati verifikasi ini
+    if (req.user.role === "super_admin") {
+      return next();
+    }
+
+    const kelas = await Kelas.findOne({
+      waliKelas: req.user.id,
+      isActive: true,
+    });
+    if (!kelas) {
+      return res
+        .status(403)
+        .json({ message: "Akses ditolak: Anda bukan wali kelas aktif." });
+    }
+    // Simpan data kelas yang diampu untuk digunakan di controller
+    req.kelasWali = kelas;
+    next();
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Gagal memverifikasi status wali kelas." });
+  }
+};
+
 const checkUserActive = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id); // Disederhanakan
@@ -90,11 +108,9 @@ const checkUserActive = async (req, res, next) => {
       return res.status(404).json({ message: "User tidak ditemukan." });
     }
     if (!user.isActive) {
-      return res
-        .status(403)
-        .json({
-          message: "Akun Anda telah dinonaktifkan. Hubungi administrator.",
-        });
+      return res.status(403).json({
+        message: "Akun Anda telah dinonaktifkan. Hubungi administrator.",
+      });
     }
     req.userDetail = user;
     next();
@@ -121,12 +137,10 @@ const checkOwnership = (model) => {
         }
       }
       if (!isOwner) {
-        return res
-          .status(403)
-          .json({
-            message:
-              "Akses ditolak: Anda tidak memiliki hak untuk mengakses resource ini.",
-          });
+        return res.status(403).json({
+          message:
+            "Akses ditolak: Anda tidak memiliki hak untuk mengakses resource ini.",
+        });
       }
       next();
     } catch (error) {
@@ -144,6 +158,7 @@ module.exports = {
   verifySiswa,
   verifyAdminOrGuru,
   verifyAnyUser,
+  verifyWaliKelas, // Ekspor middleware baru
   checkUserActive,
   checkOwnership,
 };

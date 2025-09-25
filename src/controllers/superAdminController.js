@@ -1,10 +1,10 @@
-// controllers/superAdminController.js
+// src/controllers/superAdminController.js
 const User = require("../models/User");
 const MataPelajaran = require("../models/MataPelajaran");
 const Kelas = require("../models/Kelas");
 const Jadwal = require("../models/Jadwal");
 const bcrypt = require("bcryptjs");
-const mongoose = require("mongoose"); // Tambahkan mongoose
+const mongoose = require("mongoose");
 
 // ============= DASHBOARD =============
 exports.getDashboard = async (req, res) => {
@@ -192,17 +192,48 @@ exports.updateUser = async (req, res) => {
   }
 };
 
+/**
+ * @summary Menonaktifkan user dan membersihkan relasi data (mis: dari daftar siswa kelas)
+ * @description Menggunakan transaksi untuk memastikan operasi atomik.
+ */
 exports.deleteUser = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
-    const user = await User.findByIdAndUpdate(req.params.id, {
-      isActive: false,
-    });
+    const userId = req.params.id;
+    const user = await User.findById(userId).session(session);
+
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: "User tidak ditemukan." });
     }
-    res.json({ message: "User berhasil dinonaktifkan." });
+
+    // 1. Menonaktifkan user
+    user.isActive = false;
+
+    // 2. Jika user adalah siswa, hapus dari daftar siswa di kelasnya
+    if (user.role === "siswa" && user.kelas) {
+      await Kelas.findByIdAndUpdate(
+        user.kelas,
+        { $pull: { siswa: userId } },
+        { session }
+      );
+    }
+
+    await user.save({ session });
+
+    await session.commitTransaction();
+    res.json({
+      message: "User berhasil dinonaktifkan dan relasi data dibersihkan.",
+    });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    await session.abortTransaction();
+    res
+      .status(500)
+      .json({ message: "Gagal menonaktifkan user.", error: error.message });
+  } finally {
+    session.endSession();
   }
 };
 
@@ -224,7 +255,7 @@ exports.resetPassword = async (req, res) => {
   }
 };
 
-// ============= ACADEMIC CYCLE MANAGEMENT (BARU) =============
+// ============= ACADEMIC CYCLE MANAGEMENT =============
 exports.processPromotion = async (req, res) => {
   const { siswaData, fromKelasId, tahunAjaran, semester } = req.body;
 
@@ -252,7 +283,6 @@ exports.processPromotion = async (req, res) => {
         continue;
       }
 
-      // 1. Arsipkan kelas lama ke riwayat
       const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
         (riwayat) =>
           riwayat.kelas.equals(fromKelasId) &&
@@ -267,33 +297,24 @@ exports.processPromotion = async (req, res) => {
         });
       }
 
-      // 2. Update status berdasarkan pilihan
       if (status === "Naik Kelas") {
         if (!toKelasId)
           throw new Error(
             `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
           );
-
-        // Pindahkan siswa ke kelas baru
         siswa.kelas = toKelasId;
         await Kelas.findByIdAndUpdate(
           toKelasId,
           { $addToSet: { siswa: siswaId } },
           { session }
         );
-      } else if (status === "Tinggal Kelas") {
-        // Siswa tetap di kelas yang sama, tidak perlu mengubah 'siswa.kelas'
-        // Namun, kita tetap memprosesnya agar tercatat dalam riwayat
       } else if (status === "Lulus") {
-        siswa.kelas = null; // Tidak lagi memiliki kelas aktif
-        siswa.isActive = false; // Nonaktifkan akun siswa yang lulus
+        siswa.kelas = null;
+        siswa.isActive = false;
       }
-
       await siswa.save({ session });
     }
 
-    // 3. Setelah semua siswa diproses, update daftar siswa di kelas asal
-    // Siswa yang naik kelas atau lulus akan dihapus dari kelas lama
     const siswaToStay = siswaData
       .filter((s) => s.status === "Tinggal Kelas")
       .map((s) => s.siswaId);

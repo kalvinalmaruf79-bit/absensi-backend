@@ -32,13 +32,13 @@ const guruRoutes = require("./src/routes/guruRoutes");
 const siswaRoutes = require("./src/routes/siswaRoutes");
 const absensiRoutes = require("./src/routes/absensiRoutes");
 const qrRoutes = require("./src/routes/qrRoutes");
-const laporanRoutes = require("./src/routes/laporanRoutes");
+// const laporanRoutes = require("./src/routes/laporanRoutes"); // <-- DIHAPUS
 const commonRoutes = require("./src/routes/commonRoutes");
 const uploadRoutes = require("./src/routes/uploadRoutes");
 const pengumumanRoutes = require("./src/routes/pengumumanRoutes");
 const materiRoutes = require("./src/routes/materiRoutes");
 const tugasRoutes = require("./src/routes/tugasRoutes");
-const akademikRoutes = require("./src/routes/akademikRoutes"); // <-- BARU
+const akademikRoutes = require("./src/routes/akademikRoutes");
 
 // 5. MOUNTING ROUTES
 app.use("/api/auth", authRoutes);
@@ -47,13 +47,13 @@ app.use("/api/guru", guruRoutes);
 app.use("/api/siswa", siswaRoutes);
 app.use("/api/absensi", absensiRoutes);
 app.use("/api/qr", qrRoutes);
-app.use("/api/laporan", laporanRoutes);
+// app.use("/api/laporan", laporanRoutes); // <-- DIHAPUS
 app.use("/api/common", commonRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/pengumuman", pengumumanRoutes);
 app.use("/api/materi", materiRoutes);
 app.use("/api/tugas", tugasRoutes);
-app.use("/api/akademik", akademikRoutes); // <-- BARU
+app.use("/api/akademik", akademikRoutes);
 
 // 6. SPECIAL ROUTES (HEALTH CHECK & 404)
 app.get("/api/health", (req, res) => {

@@ -7,13 +7,13 @@ const {
   getJadwalGuru,
   getSiswaKelas,
   inputNilai,
-  inputNilaiMassal, // Tambahkan ini
+  inputNilaiMassal,
   getNilaiSiswa,
   getDetailNilaiSiswa,
   exportNilai,
   getAnalisisKinerjaSiswa,
   getAbsensiBySesi,
-  getSiswaWaliKelas,
+  // getSiswaWaliKelas, // Fungsi ini dipindahkan ke waliKelasRoutes
 } = require("../controllers/guruController");
 
 const {
@@ -22,7 +22,14 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
+// Impor rute wali kelas yang baru
+const waliKelasRoutes = require("./waliKelasRoutes");
+
 router.use(authMiddleware, verifyGuru, checkUserActive);
+
+// Gunakan rute wali kelas dengan prefix '/wali-kelas'
+// Sehingga endpoint-nya menjadi /api/guru/wali-kelas/...
+router.use("/wali-kelas", waliKelasRoutes);
 
 // Dashboard & Profile
 router.get("/dashboard", getDashboard);
@@ -31,13 +38,9 @@ router.get("/jadwal", getJadwalGuru);
 // Absensi Management
 router.get("/absensi/sesi", getAbsensiBySesi);
 
-// Wali Kelas
-router.get("/wali-kelas/siswa", getSiswaWaliKelas);
-
 // Siswa Management
 router.get("/kelas/:kelasId/siswa", getSiswaKelas);
 
-// --- PERUBAHAN DI SINI ---
 // Nilai Management
 router.post("/nilai", inputNilai);
 router.post("/nilai/bulk", inputNilaiMassal); // Rute baru untuk input massal

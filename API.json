@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-4a7b-8c9d-1234567890ab",
-    "name": "API Sekolah V4.4 - Pengujian Menyeluruh (Complete)",
-    "description": "Alur kerja lengkap yang menguji SETIAP endpoint Super Admin, Guru, dan Siswa. Termasuk alur akademik dari awal hingga akhir, ditambah folder khusus untuk pengujian CRUD individual, fitur ekspor, laporan, dan keamanan untuk memastikan cakupan 100%.",
+    "name": "API Sekolah V4.5 - Pengujian Menyeluruh (Complete & Corrected)",
+    "description": "Alur kerja lengkap yang menguji SETIAP endpoint Super Admin, Guru, dan Siswa. Termasuk alur akademik dari awal hingga akhir, alur pengajuan izin/sakit terintegrasi, fitur khusus wali kelas, dan pengujian keamanan.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "32084244"
   },
@@ -819,6 +819,109 @@
       ]
     },
     {
+      "name": "[[FLOW PENGAJUAN IZIN & SAKIT]]",
+      "item": [
+        {
+          "name": "Siswa Mengajukan Izin Sakit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const response = pm.response.json();",
+                  "pm.collectionVariables.set(\"pengajuanId\", response.data._id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{siswaToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "tanggal",
+                  "value": "{{tanggalHariIni}}",
+                  "type": "text"
+                },
+                {
+                  "key": "keterangan",
+                  "value": "sakit",
+                  "type": "text"
+                },
+                {
+                  "key": "alasan",
+                  "value": "Demam tinggi, surat dokter terlampir.",
+                  "type": "text"
+                },
+                {
+                  "key": "fileBukti",
+                  "type": "file",
+                  "src": "/path/to/your/surat-sakit.pdf"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/absensi/pengajuan",
+              "host": ["{{baseUrl}}"],
+              "path": ["absensi", "pengajuan"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Wali Kelas Menyetujui Pengajuan",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{guruToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PUT",
+            "header": [],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n    \"status\": \"disetujui\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/guru/wali-kelas/pengajuan-absensi/{{pengajuanId}}/review",
+              "host": ["{{baseUrl}}"],
+              "path": [
+                "guru",
+                "wali-kelas",
+                "pengajuan-absensi",
+                "{{pengajuanId}}",
+                "review"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "[[FLOW GURU LANJUTAN]] - Akhir Semester",
       "item": [
         {
@@ -897,8 +1000,60 @@
           ]
         },
         {
-          "name": "Generate Laporan Akademik (Wali Kelas)",
+          "name": "Fungsi Wali Kelas",
           "item": [
+            {
+              "name": "Melihat Daftar Siswa Perwalian",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{guruToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/guru/wali-kelas/siswa",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["guru", "wali-kelas", "siswa"]
+                }
+              },
+              "response": []
+            },
+            {
+              "name": "Melihat Pengajuan Absensi Siswa (Pending)",
+              "request": {
+                "auth": {
+                  "type": "bearer",
+                  "bearer": [
+                    {
+                      "key": "token",
+                      "value": "{{guruToken}}",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/guru/wali-kelas/pengajuan-absensi?status=pending",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["guru", "wali-kelas", "pengajuan-absensi"],
+                  "query": [
+                    {
+                      "key": "status",
+                      "value": "pending"
+                    }
+                  ]
+                }
+              },
+              "response": []
+            },
             {
               "name": "Generate Rapor Siswa Rina",
               "request": {
@@ -1273,77 +1428,6 @@
               "response": []
             }
           ]
-        },
-        {
-          "name": "Laporan (Siswa & Admin)",
-          "item": [
-            {
-              "name": "Siswa Upload Laporan",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{siswaToken}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "POST",
-                "header": [],
-                "body": {
-                  "mode": "formdata",
-                  "formdata": [
-                    {
-                      "key": "file",
-                      "type": "file",
-                      "src": "/C:/Users/ACER/Downloads/contoh-laporan.pdf"
-                    },
-                    {
-                      "key": "deskripsi",
-                      "value": "Ini adalah laporan izin sakit.",
-                      "type": "text"
-                    },
-                    {
-                      "key": "kategori",
-                      "value": "izin",
-                      "type": "text"
-                    }
-                  ]
-                },
-                "url": {
-                  "raw": "{{baseUrl}}/laporan/upload",
-                  "host": ["{{baseUrl}}"],
-                  "path": ["laporan", "upload"]
-                }
-              },
-              "response": []
-            },
-            {
-              "name": "Admin Get Semua Laporan",
-              "request": {
-                "auth": {
-                  "type": "bearer",
-                  "bearer": [
-                    {
-                      "key": "token",
-                      "value": "{{superAdminToken}}",
-                      "type": "string"
-                    }
-                  ]
-                },
-                "method": "GET",
-                "header": [],
-                "url": {
-                  "raw": "{{baseUrl}}/laporan/semua",
-                  "host": ["{{baseUrl}}"],
-                  "path": ["laporan", "semua"]
-                }
-              },
-              "response": []
-            }
-          ]
         }
       ]
     },
@@ -1471,6 +1555,10 @@
     },
     {
       "key": "kelasBaruId",
+      "value": ""
+    },
+    {
+      "key": "pengajuanId",
       "value": ""
     }
   ]

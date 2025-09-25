@@ -1,12 +1,13 @@
 const mongoose = require("mongoose");
 const readline = require("readline");
-require("dotenv").config();
+require("dotenv").config({
+  path: require("path").resolve(__dirname, "../.env"),
+});
 
 // Impor SEMUA model yang ada di proyek Anda
 const Absensi = require("../src/models/Absensi");
 const Jadwal = require("../src/models/Jadwal");
 const Kelas = require("../src/models/Kelas");
-const Laporan = require("../src/models/Laporan");
 const MataPelajaran = require("../src/models/MataPelajaran");
 const Materi = require("../src/models/Materi");
 const Nilai = require("../src/models/Nilai");
@@ -14,6 +15,7 @@ const Pengumuman = require("../src/models/Pengumuman");
 const SesiPresensi = require("../src/models/SesiPresensi");
 const Tugas = require("../src/models/Tugas");
 const User = require("../src/models/User");
+const PengajuanAbsensi = require("../src/models/PengajuanAbsensi"); // <-- DITAMBAHKAN
 
 const MONGO_URI = process.env.DB_URI;
 
@@ -39,13 +41,13 @@ const clearDatabase = async () => {
       Absensi,
       Jadwal,
       Kelas,
-      Laporan,
       MataPelajaran,
       Materi,
       Nilai,
       Pengumuman,
       SesiPresensi,
       Tugas,
+      PengajuanAbsensi, // <-- DITAMBAHKAN
     ];
 
     const promises = [];
@@ -76,14 +78,13 @@ const clearDatabase = async () => {
       await mongoose.connection.close();
       console.log("🔌 Koneksi MongoDB ditutup.");
     }
+    rl.close();
   }
 };
 
 console.log("================================================================");
-console.log(
-  "🚨 PERINGATAN: SKRIP INI AKAN MENGHAPUS SEMUA DATA             🚨"
-);
-console.log("🚨        KECUALI AKUN SUPER ADMIN ANDA                       🚨");
+console.log("🚨 PERINGATAN: SKRIP INI AKAN MENGHAPUS SEMUA DATA          🚨");
+console.log("🚨               KECUALI AKUN SUPER ADMIN ANDA               🚨");
 console.log("================================================================");
 rl.question('Untuk konfirmasi, ketik "iya" dan tekan Enter: ', (answer) => {
   if (answer.toLowerCase() === "iya") {
