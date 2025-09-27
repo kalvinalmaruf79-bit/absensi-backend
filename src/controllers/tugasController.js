@@ -3,11 +3,12 @@ const Tugas = require("../models/Tugas");
 const Nilai = require("../models/Nilai");
 const User = require("../models/User");
 const Notifikasi = require("../models/Notifikasi");
-const sendPushNotification = require("../utils/sendPushNotification"); // Impor utility baru
+const ActivityLog = require("../models/ActivityLog"); // Impor model baru
+const sendPushNotification = require("../utils/sendPushNotification");
+const { uploadFromBuffer, deleteFile } = require("../utils/cloudinary");
 const mongoose = require("mongoose");
-const fs = require("fs");
 
-// Helper untuk membuat notifikasi di database
+// Helper (tidak berubah)
 const createBulkNotifikasi = async (
   penerimaIds,
   tipe,
@@ -27,7 +28,7 @@ const createBulkNotifikasi = async (
   }
 };
 
-// Guru: Membuat tugas baru
+// Create Tugas (tidak berubah)
 exports.createTugas = async (req, res) => {
   try {
     const {
@@ -58,7 +59,6 @@ exports.createTugas = async (req, res) => {
     });
     await tugas.save();
 
-    // Ambil data siswa beserta deviceTokens
     const siswaDiKelas = await User.find({
       kelas: kelas,
       role: "siswa",
@@ -67,7 +67,6 @@ exports.createTugas = async (req, res) => {
     const siswaIds = siswaDiKelas.map((s) => s._id);
     const playerIds = siswaDiKelas.flatMap((s) => s.deviceTokens);
 
-    // Kirim notifikasi ke database (untuk riwayat)
     await createBulkNotifikasi(
       siswaIds,
       "tugas_baru",
@@ -76,7 +75,6 @@ exports.createTugas = async (req, res) => {
       tugas._id
     );
 
-    // KIRIM PUSH NOTIFICATION (FIRE-AND-FORGET)
     sendPushNotification(
       playerIds,
       `Tugas Baru: ${judul}`,
@@ -93,7 +91,7 @@ exports.createTugas = async (req, res) => {
   }
 };
 
-// Siswa & Guru: Mendapatkan tugas berdasarkan kelas dan mapel
+// Get Tugas (tidak berubah)
 exports.getTugasByKelas = async (req, res) => {
   try {
     const { kelasId, mataPelajaranId } = req.query;
@@ -111,38 +109,65 @@ exports.getTugasByKelas = async (req, res) => {
 exports.submitTugas = async (req, res) => {
   try {
     const { id } = req.params;
+    const siswaId = req.user.id;
+
     if (!req.file) {
       return res.status(400).json({ message: "File tugas wajib diunggah." });
     }
 
-    const submission = {
+    const tugas = await Tugas.findById(id);
+    if (!tugas) {
+      return res.status(404).json({ message: "Tugas tidak ditemukan." });
+    }
+
+    if (new Date() > new Date(tugas.deadline)) {
+      return res
+        .status(400)
+        .json({ message: "Waktu pengumpulan tugas telah berakhir." });
+    }
+
+    const existingSubmission = tugas.submissions.find(
+      (sub) => sub.siswa.toString() === siswaId
+    );
+    if (existingSubmission && existingSubmission.public_id) {
+      await deleteFile(existingSubmission.public_id);
+    }
+
+    const result = await uploadFromBuffer(req.file.buffer, "jawaban-tugas");
+
+    const newSubmission = {
       _id: new mongoose.Types.ObjectId(),
-      siswa: req.user.id,
-      filePath: req.file.path,
+      siswa: siswaId,
+      url: result.secure_url,
+      public_id: result.public_id,
       fileName: req.file.originalname,
     };
 
-    const tugas = await Tugas.findOneAndUpdate(
-      { _id: id, "submissions.siswa": { $ne: req.user.id } },
-      { $push: { submissions: submission } },
-      { new: true }
-    );
-
-    if (!tugas) {
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({
-        message:
-          "Gagal mengumpulkan tugas. Anda mungkin sudah pernah mengumpulkan.",
-      });
+    if (existingSubmission) {
+      existingSubmission.set(newSubmission);
+    } else {
+      tugas.submissions.push(newSubmission);
     }
+
+    await tugas.save();
+
+    // --- LOGGING AKTIVITAS ---
+    ActivityLog.create({
+      user: siswaId,
+      action: "SUBMIT_TUGAS",
+      details: `Mengumpulkan tugas '${tugas.judul}'`,
+      resourceId: tugas._id,
+    }).catch((err) => console.error("Gagal mencatat log submit tugas:", err));
+    // -------------------------
 
     res.json({ message: "Tugas berhasil dikumpulkan." });
   } catch (error) {
+    console.error("Error submitting tugas:", error);
     res.status(500).json({ message: "Gagal mengumpulkan tugas." });
   }
 };
 
-// Guru: Melihat semua pengumpulan untuk satu tugas
+// Get Submissions (tidak berubah)
 exports.getTugasSubmissions = async (req, res) => {
   try {
     const { tugasId } = req.params;
@@ -166,7 +191,7 @@ exports.getTugasSubmissions = async (req, res) => {
   }
 };
 
-// Guru: Memberikan nilai dan feedback
+// Grade Submission (tidak berubah)
 exports.gradeSubmission = async (req, res) => {
   try {
     const { submissionId } = req.params;
@@ -215,7 +240,6 @@ exports.gradeSubmission = async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Buat notifikasi di database
     const notif = new Notifikasi({
       penerima: submission.siswa,
       tipe: "nilai_baru",
@@ -225,7 +249,6 @@ exports.gradeSubmission = async (req, res) => {
     });
     await notif.save();
 
-    // KIRIM PUSH NOTIFICATION
     const siswa = await User.findById(submission.siswa).select("deviceTokens");
     if (siswa && siswa.deviceTokens) {
       sendPushNotification(

@@ -11,7 +11,9 @@ const {
   getNotifikasi,
   markNotifikasiAsRead,
   getJadwalMendatang,
-  getTugasMendatang, // Impor fungsi baru
+  getTugasMendatang,
+  getJadwalByTanggal,
+  getHistoriAktivitas, // Impor fungsi baru
 } = require("../controllers/siswaController");
 
 const {
@@ -24,6 +26,9 @@ router.use(authMiddleware, verifySiswa, checkUserActive);
 
 // Dashboard & Profile
 router.get("/dashboard", getDashboard);
+// --- RUTE BARU UNTUK HISTORI ---
+router.get("/histori-aktivitas", getHistoriAktivitas);
+// -------------------------------
 
 // Notifikasi
 router.get("/notifikasi", getNotifikasi);
@@ -32,18 +37,12 @@ router.patch("/notifikasi/:id/read", markNotifikasiAsRead);
 // Jadwal
 router.get("/jadwal", getJadwalSiswa);
 router.get("/jadwal/mendatang", getJadwalMendatang);
+router.get("/jadwal-by-tanggal", getJadwalByTanggal);
 
-// --- RUTE BARU UNTUK TUGAS MENDATANG ---
+// Rute lainnya
 router.get("/tugas/mendatang", getTugasMendatang);
-// ------------------------------------
-
-// Nilai
 router.get("/nilai", getNilaiSiswa);
-
-// Presensi
 router.get("/presensi", getRiwayatPresensi);
-
-// Teman Sekelas
 router.get("/teman-sekelas", getTemanSekelas);
 
 module.exports = router;

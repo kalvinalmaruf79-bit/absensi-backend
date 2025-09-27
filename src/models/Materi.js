@@ -23,7 +23,8 @@ const materiSchema = new mongoose.Schema(
     files: [
       {
         fileName: String,
-        filePath: String,
+        url: String, // Menggantikan filePath
+        public_id: String, // ID unik dari Cloudinary untuk menghapus
         fileType: String,
       },
     ],
@@ -33,12 +34,10 @@ const materiSchema = new mongoose.Schema(
         url: String,
       },
     ],
-    // --- FIELD BARU DIMULAI DI SINI ---
     isPublished: {
       type: Boolean,
-      default: true, // Materi akan langsung terlihat secara default
+      default: true,
     },
-    // --- FIELD BARU SELESAI DI SINI ---
   },
   { timestamps: true }
 );

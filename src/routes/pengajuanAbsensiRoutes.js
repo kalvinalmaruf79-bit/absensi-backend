@@ -16,8 +16,12 @@ const {
   verifyAdminOrGuru,
 } = require("../middleware/authMiddleware");
 
-// Inisialisasi uploader khusus untuk bukti izin/sakit
-const buktiUploader = createUploader("bukti-absensi", 10, /pdf|jpg|jpeg|png/); // Maks 10MB, format gambar & PDF
+// PERBAIKAN: Memanggil createUploader dengan argumen yang benar
+const buktiUploader = createUploader(10, [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+]);
 
 // === RUTE SISWA ===
 // Membuat pengajuan baru

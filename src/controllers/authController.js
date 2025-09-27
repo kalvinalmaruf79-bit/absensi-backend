@@ -1,13 +1,13 @@
 // controllers/authController.js
 const User = require("../models/User");
-const bcrypt = require("bcryptjs"); // PERBAIKAN KRITIS: Mengimpor library bcryptjs
+const ActivityLog = require("../models/ActivityLog"); // Impor model baru
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const sendEmail = require("../utils/sendEmail");
 const fs = require("fs");
 const path = require("path");
 
-// --- FUNGSI BARU UNTUK REGISTRASI PERANGKAT ---
 exports.registerDevice = async (req, res) => {
   try {
     const { deviceToken } = req.body;
@@ -16,7 +16,6 @@ exports.registerDevice = async (req, res) => {
     }
 
     const userId = req.user.id;
-    // Gunakan $addToSet untuk menghindari duplikasi token
     await User.findByIdAndUpdate(userId, {
       $addToSet: { deviceTokens: deviceToken },
     });
@@ -26,7 +25,6 @@ exports.registerDevice = async (req, res) => {
     res.status(500).json({ message: "Gagal mendaftarkan perangkat." });
   }
 };
-// ------------------------------------------
 
 exports.loginUser = async (req, res) => {
   try {
@@ -53,6 +51,15 @@ exports.loginUser = async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
+
+    // --- LOGGING AKTIVITAS ---
+    ActivityLog.create({
+      user: user._id,
+      action: "USER_LOGIN",
+      details: `User login dari perangkat`,
+    }).catch((err) => console.error("Gagal mencatat log login:", err)); // Log error jika gagal
+    // -------------------------
+
     const userResponse = user.toObject();
     delete userResponse.password;
     res.json({

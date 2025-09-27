@@ -1,4 +1,4 @@
-// routes/superAdminRoutes.js
+// src/routes/superAdminRoutes.js
 const express = require("express");
 const router = express.Router();
 const createUploader = require("../middleware/uploadMiddleware");
@@ -16,6 +16,7 @@ const {
   resetPassword,
   importUsers,
   getActivityReport,
+  getPromotionRecommendation,
   processPromotion,
   createMataPelajaran,
   getAllMataPelajaran,
@@ -41,9 +42,9 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
-// PERBAIKAN: Menggunakan array MIME type yang spesifik dan benar untuk file Excel
-const excelUploader = createUploader("imports", 5, [
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // MIME type standar untuk .xlsx
+// PERBAIKAN: Memanggil createUploader dengan argumen yang benar
+const excelUploader = createUploader(5, [
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // MIME type untuk .xlsx
 ]);
 
 router.use(authMiddleware, verifySuperAdmin, checkUserActive);
@@ -69,6 +70,7 @@ router.put("/users/:id", updateUser);
 router.delete("/users/:id", deleteUser);
 
 // Academic Cycle Management
+router.get("/academic/promotion-recommendation", getPromotionRecommendation);
 router.post("/academic/promote", processPromotion);
 
 // Mata Pelajaran Management

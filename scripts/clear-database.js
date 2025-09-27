@@ -1,3 +1,4 @@
+// tools/clearDatabase.js
 const mongoose = require("mongoose");
 const readline = require("readline");
 require("dotenv").config({
@@ -15,7 +16,9 @@ const Pengumuman = require("../src/models/Pengumuman");
 const SesiPresensi = require("../src/models/SesiPresensi");
 const Tugas = require("../src/models/Tugas");
 const User = require("../src/models/User");
-const PengajuanAbsensi = require("../src/models/PengajuanAbsensi"); // <-- DITAMBAHKAN
+const PengajuanAbsensi = require("../src/models/PengajuanAbsensi");
+const Notifikasi = require("../src/models/Notifikasi"); // <-- DITAMBAHKAN
+const Settings = require("../src/models/Settings"); // <-- DITAMBAHKAN
 
 const MONGO_URI = process.env.DB_URI;
 
@@ -47,12 +50,13 @@ const clearDatabase = async () => {
       Pengumuman,
       SesiPresensi,
       Tugas,
-      PengajuanAbsensi, // <-- DITAMBAHKAN
+      PengajuanAbsensi,
+      Notifikasi, // <-- DITAMBAHKAN
     ];
 
     const promises = [];
 
-    // Menghapus semua dokumen dari setiap model (selain User)
+    // Menghapus semua dokumen dari setiap model (selain User dan Settings)
     for (const model of models) {
       console.log(`   - Menghapus data dari koleksi: ${model.collection.name}`);
       promises.push(model.deleteMany({}));
@@ -67,10 +71,16 @@ const clearDatabase = async () => {
     );
     await User.deleteMany({ role: { $ne: "super_admin" } });
 
+    // Membersihkan koleksi settings (opsional, jika ingin reset ke default saat aplikasi start)
+    console.log(`   - Menghapus data dari koleksi: settings`);
+    await Settings.deleteMany({}); // Menghapus semua dokumen settings
+
     console.log(
       "\n✅✅✅ Database berhasil dibersihkan! Semua data telah dihapus."
     );
-    console.log("ℹ️ Akun Super Admin tetap ada untuk akses awal.");
+    console.log(
+      "ℹ️ Akun Super Admin dan Pengaturan Global tetap ada untuk akses awal."
+    );
   } catch (error) {
     console.error("❌ Gagal membersihkan database:", error);
   } finally {
@@ -83,8 +93,8 @@ const clearDatabase = async () => {
 };
 
 console.log("================================================================");
-console.log("🚨 PERINGATAN: SKRIP INI AKAN MENGHAPUS SEMUA DATA          🚨");
-console.log("🚨               KECUALI AKUN SUPER ADMIN ANDA               🚨");
+console.log("🚨 PERINGATAN: SKRIP INI AKAN MENGHAPUS SEMUA DATA         🚨");
+console.log("🚨               KECUALI AKUN SUPER ADMIN ANDA              🚨");
 console.log("================================================================");
 rl.question('Untuk konfirmasi, ketik "iya" dan tekan Enter: ', (answer) => {
   if (answer.toLowerCase() === "iya") {

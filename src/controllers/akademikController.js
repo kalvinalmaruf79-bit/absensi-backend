@@ -6,7 +6,7 @@ const Kelas = require("../models/Kelas");
 const MataPelajaran = require("../models/MataPelajaran");
 
 /**
- * @summary Menghasilkan Rapor Siswa untuk semester tertentu
+ * @summary Menghasilkan Rapor Siswa untuk semester tertentu (DIPERBARUI)
  */
 exports.generateRaporSiswa = async (req, res) => {
   try {
@@ -19,16 +19,39 @@ exports.generateRaporSiswa = async (req, res) => {
       });
     }
 
-    // 1. Ambil data siswa
-    const siswa = await User.findById(siswaId).populate({
-      path: "riwayatKelas.kelas",
-      select: "nama tingkat jurusan waliKelas",
-      populate: { path: "waliKelas", select: "name" },
-    });
+    // Populate semua kemungkinan data kelas, baik dari riwayat maupun yang aktif
+    const siswa = await User.findById(siswaId)
+      .populate({
+        path: "riwayatKelas.kelas",
+        select: "nama tingkat jurusan waliKelas",
+        populate: { path: "waliKelas", select: "name" },
+      })
+      .populate({
+        path: "kelas", // Juga populate kelas aktif saat ini
+        select: "nama tingkat jurusan waliKelas",
+        populate: { path: "waliKelas", select: "name" },
+      });
 
     if (!siswa || siswa.role !== "siswa") {
       return res.status(404).json({ message: "Siswa tidak ditemukan." });
     }
+
+    // --- LOGIKA BARU UNTUK MENCARI KELAS YANG BENAR ---
+    let kelasDiPeriodeIni = null;
+    const riwayat = siswa.riwayatKelas.find(
+      (r) => r.tahunAjaran === tahunAjaran && r.semester === semester
+    );
+
+    if (riwayat) {
+      // Jika ditemukan di riwayat, gunakan data kelas dari riwayat tersebut
+      kelasDiPeriodeIni = riwayat.kelas;
+    } else {
+      // Jika tidak ditemukan di riwayat, asumsikan siswa masih di kelas aktifnya
+      // pada periode yang diminta (misalnya, saat rapor semester ini dibuat).
+      // Ini perlu divalidasi dengan tahun ajaran aktif jika diperlukan.
+      kelasDiPeriodeIni = siswa.kelas;
+    }
+    // ----------------------------------------------------
 
     // 2. Ambil semua nilai pada periode tersebut
     const nilaiRecords = await Nilai.find({
@@ -71,14 +94,10 @@ exports.generateRaporSiswa = async (req, res) => {
       informasiSiswa: {
         nama: siswa.name,
         nis: siswa.identifier,
-        kelas:
-          siswa.riwayatKelas.find((r) => r.tahunAjaran === tahunAjaran)?.kelas
-            ?.nama || siswa.kelas.nama,
+        kelas: kelasDiPeriodeIni?.nama || "Tidak Terdaftar",
         tahunAjaran,
         semester,
-        waliKelas:
-          siswa.riwayatKelas.find((r) => r.tahunAjaran === tahunAjaran)?.kelas
-            ?.waliKelas?.name || "N/A",
+        waliKelas: kelasDiPeriodeIni?.waliKelas?.name || "N/A",
       },
       nilaiAkademik: nilaiRecords.map((n) => ({
         mataPelajaran: n.mataPelajaran.nama,

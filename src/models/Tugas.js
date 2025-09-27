@@ -21,7 +21,6 @@ const tugasSchema = new mongoose.Schema(
       required: true,
     },
     deadline: { type: Date, required: true },
-    // --- PERUBAHAN DIMULAI DI SINI ---
     semester: {
       type: String,
       enum: ["ganjil", "genap"],
@@ -31,11 +30,11 @@ const tugasSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    // --- PERUBAHAN SELESAI DI SINI ---
     submissions: [
       {
         siswa: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        filePath: String,
+        url: String, // Menggantikan filePath
+        public_id: String, // ID unik dari Cloudinary untuk menghapus
         fileName: String,
         submittedAt: { type: Date, default: Date.now },
         nilai: { type: Number, min: 0, max: 100 },

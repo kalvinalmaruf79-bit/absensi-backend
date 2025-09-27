@@ -5,9 +5,67 @@ const Nilai = require("../models/Nilai");
 const Jadwal = require("../models/Jadwal");
 const Absensi = require("../models/Absensi");
 const Notifikasi = require("../models/Notifikasi");
-const Tugas = require("../models/Tugas"); // Impor model Tugas
+const Tugas = require("../models/Tugas");
+const ActivityLog = require("../models/ActivityLog"); // Impor model baru
 
-// --- FUNGSI BARU UNTUK TUGAS MENDATANG ---
+// --- FUNGSI BARU UNTUK MENGAMBIL HISTORI AKTIVITAS ---
+exports.getHistoriAktivitas = async (req, res) => {
+  try {
+    const { limit = 25 } = req.query; // Default 25 log terbaru
+    const histori = await ActivityLog.find({ user: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+    res.json(histori);
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal mengambil histori aktivitas.",
+      error: error.message,
+    });
+  }
+};
+// ----------------------------------------------------
+
+exports.getJadwalByTanggal = async (req, res) => {
+  try {
+    const { tanggal } = req.query;
+    if (!tanggal) {
+      return res
+        .status(400)
+        .json({ message: "Parameter tanggal wajib diisi." });
+    }
+
+    const date = new Date(tanggal);
+    const dayOfWeek = [
+      "minggu",
+      "senin",
+      "selasa",
+      "rabu",
+      "kamis",
+      "jumat",
+      "sabtu",
+    ][date.getUTCDay()];
+
+    const siswa = await User.findById(req.user.id);
+    if (!siswa || !siswa.kelas) {
+      return res.status(404).json({ message: "Siswa atau kelas tidak ada." });
+    }
+
+    const jadwalHariItu = await Jadwal.find({
+      kelas: siswa.kelas,
+      hari: dayOfWeek,
+      isActive: true,
+    })
+      .populate("mataPelajaran", "nama")
+      .sort({ jamMulai: 1 });
+
+    res.json(jadwalHariItu);
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: "Gagal mengambil jadwal.", error: error.message });
+  }
+};
+
 exports.getTugasMendatang = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id);
@@ -17,31 +75,27 @@ exports.getTugasMendatang = async (req, res) => {
         .json({ message: "Data siswa atau kelas tidak ditemukan." });
     }
 
-    const { limit = 5 } = req.query; // Ambil 5 tugas terdekat secara default
+    const { limit = 5 } = req.query;
 
     const tugasMendatang = await Tugas.find({
       kelas: siswa.kelas,
-      deadline: { $gte: new Date() }, // Hanya tugas yang belum lewat deadline
-      "submissions.siswa": { $ne: siswa._id }, // Hanya tugas yang belum dikumpulkan oleh siswa
+      deadline: { $gte: new Date() },
+      "submissions.siswa": { $ne: siswa._id },
     })
-      .sort({ deadline: 1 }) // Urutkan berdasarkan deadline terdekat
+      .sort({ deadline: 1 })
       .limit(parseInt(limit))
       .populate("mataPelajaran", "nama kode")
       .populate("guru", "name");
 
     res.json(tugasMendatang);
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Gagal mengambil tugas mendatang.",
-        error: error.message,
-      });
+    res.status(500).json({
+      message: "Gagal mengambil tugas mendatang.",
+      error: error.message,
+    });
   }
 };
-// ------------------------------------
 
-// Fungsi lainnya tetap sama...
 exports.getJadwalMendatang = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id);
@@ -101,12 +155,10 @@ exports.getJadwalMendatang = async (req, res) => {
 
     res.json({ jadwalMendatang: jadwalMendatang || null });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Gagal mengambil jadwal mendatang.",
-        error: error.message,
-      });
+    res.status(500).json({
+      message: "Gagal mengambil jadwal mendatang.",
+      error: error.message,
+    });
   }
 };
 
@@ -142,6 +194,7 @@ exports.markNotifikasiAsRead = async (req, res) => {
   }
 };
 
+// --- FUNGSI DASHBOARD DIPERBARUI ---
 exports.getDashboard = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id).populate(
@@ -152,46 +205,52 @@ exports.getDashboard = async (req, res) => {
       return res.status(404).json({ message: "Siswa tidak ditemukan." });
     }
 
-    const hariIni = [
-      "minggu",
-      "senin",
-      "selasa",
-      "rabu",
-      "kamis",
-      "jumat",
-      "sabtu",
-    ][new Date().getDay()];
-    const jadwalHariIni = await Jadwal.find({
-      kelas: siswa.kelas._id,
-      hari: hariIni,
-      isActive: true,
-    })
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name")
-      .sort({ jamMulai: 1 });
-
-    const nilaiTerbaru = await Nilai.find({ siswa: siswa._id })
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name")
-      .sort({ createdAt: -1 })
-      .limit(5);
-
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
-    const endOfMonth = new Date();
-    endOfMonth.setMonth(endOfMonth.getMonth() + 1);
-    endOfMonth.setDate(0);
-    endOfMonth.setHours(23, 59, 59, 999);
-
-    const presensiStats = await Absensi.aggregate([
-      {
-        $match: {
-          siswa: new mongoose.Types.ObjectId(req.user.id),
-          createdAt: { $gte: startOfMonth, $lte: endOfMonth },
+    // Mengambil semua data secara paralel untuk performa lebih baik
+    const [jadwalMendatang, tugasMendatang, presensiStats] = await Promise.all([
+      // Jadwal terdekat yang akan datang
+      Jadwal.findOne({
+        kelas: siswa.kelas._id,
+        hari: ["minggu", "senin", "selasa", "rabu", "kamis", "jumat", "sabtu"][
+          new Date().getDay()
+        ],
+        jamMulai: {
+          $gte: `${new Date()
+            .getHours()
+            .toString()
+            .padStart(2, "0")}:${new Date()
+            .getMinutes()
+            .toString()
+            .padStart(2, "0")}`,
         },
-      },
-      { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+        isActive: true,
+      })
+        .sort({ jamMulai: 1 })
+        .populate("mataPelajaran", "nama kode")
+        .populate("guru", "name"),
+
+      // 3 tugas terdekat yang belum dikumpulkan
+      Tugas.find({
+        kelas: siswa.kelas._id,
+        deadline: { $gte: new Date() },
+        "submissions.siswa": { $ne: siswa._id },
+      })
+        .sort({ deadline: 1 })
+        .limit(3)
+        .populate("mataPelajaran", "nama"),
+
+      // Agregasi statistik presensi bulan ini
+      Absensi.aggregate([
+        {
+          $match: {
+            siswa: new mongoose.Types.ObjectId(req.user.id),
+            createdAt: {
+              $gte: new Date(new Date().setDate(1)),
+              $lte: new Date(),
+            },
+          },
+        },
+        { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+      ]),
     ]);
 
     const statsObj = {};
@@ -205,9 +264,10 @@ exports.getDashboard = async (req, res) => {
         identifier: siswa.identifier,
         kelas: siswa.kelas,
       },
-      jadwalHariIni,
-      nilaiTerbaru,
+      jadwalMendatang: jadwalMendatang || null,
+      tugasMendatang, // Menambahkan data tugas ke response
       statistikPresensi: {
+        // Data ini siap dibuat grafik lingkaran
         hadir: statsObj.hadir || 0,
         izin: statsObj.izin || 0,
         sakit: statsObj.sakit || 0,
@@ -218,18 +278,21 @@ exports.getDashboard = async (req, res) => {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
+// ------------------------------------
 
 exports.getJadwalSiswa = async (req, res) => {
   try {
     const { tahunAjaran, semester } = req.query;
     const siswa = await User.findById(req.user.id);
-    if (!siswa || siswa.role !== "siswa" || !siswa.kelas) {
-      return res
-        .status(400)
-        .json({ message: "Siswa tidak ditemukan atau belum memiliki kelas." });
+
+    if (!siswa || siswa.role !== "siswa") {
+      return res.status(400).json({ message: "Siswa tidak ditemukan." });
+    }
+    if (!siswa.kelas && siswa.riwayatKelas.length === 0) {
+      return res.status(400).json({ message: "Siswa belum memiliki kelas." });
     }
 
-    let filter = { kelas: siswa.kelas, isActive: true };
+    let filter = { isActive: true };
 
     if (tahunAjaran && semester) {
       const riwayat = siswa.riwayatKelas.find(
@@ -237,12 +300,24 @@ exports.getJadwalSiswa = async (req, res) => {
       );
       if (riwayat) {
         filter.kelas = riwayat.kelas;
-        filter.tahunAjaran = tahunAjaran;
-        filter.semester = semester;
       } else {
-        filter.tahunAjaran = tahunAjaran;
-        filter.semester = semester;
+        filter.kelas = siswa.kelas;
       }
+      filter.tahunAjaran = tahunAjaran;
+      filter.semester = semester;
+    } else {
+      filter.kelas = siswa.kelas;
+    }
+
+    if (!filter.kelas) {
+      return res.json({
+        senin: [],
+        selasa: [],
+        rabu: [],
+        kamis: [],
+        jumat: [],
+        sabtu: [],
+      });
     }
 
     const jadwal = await Jadwal.find(filter)

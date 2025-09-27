@@ -4,14 +4,221 @@ const MataPelajaran = require("../models/MataPelajaran");
 const Kelas = require("../models/Kelas");
 const Jadwal = require("../models/Jadwal");
 const Settings = require("../models/Settings");
-const Tugas = require("../models/Tugas"); // Impor model Tugas
-const Materi = require("../models/Materi"); // Impor model Materi
-const Nilai = require("../models/Nilai"); // Impor model Nilai
-const SesiPresensi = require("../models/SesiPresensi"); // Impor model SesiPresensi
+const Tugas = require("../models/Tugas");
+const Materi = require("../models/Materi");
+const Nilai = require("../models/Nilai");
+const Absensi = require("../models/Absensi");
+const SesiPresensi = require("../models/SesiPresensi");
+const AcademicRules = require("../models/AcademicRules");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
 const fs = require("fs");
+
+// ============= ACADEMIC CYCLE MANAGEMENT (BARU & DIPERBARUI) =============
+
+/**
+ * @summary Memberikan rekomendasi kenaikan kelas berdasarkan data akademik.
+ */
+exports.getPromotionRecommendation = async (req, res) => {
+  try {
+    const { kelasId, tahunAjaran } = req.query;
+    if (!kelasId || !tahunAjaran) {
+      return res.status(400).json({
+        message: "Parameter 'kelasId' dan 'tahunAjaran' wajib diisi.",
+      });
+    }
+
+    const rules = await AcademicRules.getRules();
+    const {
+      minAttendancePercentage,
+      maxSubjectsBelowPassingGrade,
+      passingGrade,
+    } = rules.promotion;
+
+    const siswaDiKelas = await User.find({
+      kelas: kelasId,
+      role: "siswa",
+      isActive: true,
+    }).select("name identifier");
+
+    const recommendations = [];
+
+    for (const siswa of siswaDiKelas) {
+      // 1. Hitung Rekap Absensi
+      const totalJadwalSetahun = await Jadwal.countDocuments({
+        kelas: kelasId,
+        tahunAjaran,
+      });
+      const totalHadir = await Absensi.countDocuments({
+        siswa: siswa._id,
+        keterangan: "hadir",
+        $expr: {
+          $eq: [
+            { $year: "$createdAt" }, // Asumsi tahun ajaran cocok dengan tahun kalender
+            parseInt(tahunAjaran.split("/")[0]),
+          ],
+        },
+      });
+      const attendancePercentage =
+        totalJadwalSetahun > 0
+          ? (totalHadir / (totalJadwalSetahun * 2)) * 100
+          : 100; // Asumsi 2 semester
+
+      // 2. Hitung Nilai di Bawah KKM
+      const nilaiDiBawahKKM = await Nilai.aggregate([
+        {
+          $match: {
+            siswa: siswa._id,
+            tahunAjaran,
+            nilai: { $lt: passingGrade },
+          },
+        },
+        {
+          $group: {
+            _id: "$mataPelajaran",
+          },
+        },
+        {
+          $count: "total",
+        },
+      ]);
+      const totalNilaiDiBawahKKM =
+        nilaiDiBawahKKM.length > 0 ? nilaiDiBawahKKM[0].total : 0;
+
+      // 3. Tentukan Rekomendasi
+      let systemRecommendation = "Naik Kelas";
+      const reasons = [];
+      if (attendancePercentage < minAttendancePercentage) {
+        systemRecommendation = "Tinggal Kelas";
+        reasons.push(
+          `Kehadiran di bawah ${minAttendancePercentage}% (hanya ${attendancePercentage.toFixed(
+            2
+          )}%)`
+        );
+      }
+      if (totalNilaiDiBawahKKM > maxSubjectsBelowPassingGrade) {
+        systemRecommendation = "Tinggal Kelas";
+        reasons.push(
+          `Memiliki ${totalNilaiDiBawahKKM} mapel di bawah KKM (batas: ${maxSubjectsBelowPassingGrade})`
+        );
+      }
+
+      recommendations.push({
+        siswaId: siswa._id,
+        name: siswa.name,
+        identifier: siswa.identifier,
+        rekap: {
+          attendancePercentage: attendancePercentage.toFixed(2),
+          subjectsBelowPassingGrade: totalNilaiDiBawahKKM,
+        },
+        systemRecommendation,
+        reasons,
+        status: systemRecommendation, // Status awal sama dengan rekomendasi
+      });
+    }
+
+    res.json({
+      rules: rules.promotion,
+      recommendations,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal mendapatkan rekomendasi kenaikan kelas.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @summary Memproses kenaikan, kelulusan, dan tinggal kelas siswa.
+ */
+exports.processPromotion = async (req, res) => {
+  const { siswaData, fromKelasId, defaultToKelasId, tahunAjaran, semester } =
+    req.body;
+
+  if (!siswaData || !fromKelasId || !tahunAjaran || !semester) {
+    return res.status(400).json({
+      message:
+        "Data siswa, kelas asal, tahun ajaran, dan semester wajib diisi.",
+    });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const fromKelas = await Kelas.findById(fromKelasId).session(session);
+    if (!fromKelas) {
+      throw new Error("Kelas asal tidak ditemukan.");
+    }
+
+    for (const data of siswaData) {
+      const { siswaId, status, toKelasId } = data; // toKelasId bersifat opsional per siswa
+      const siswa = await User.findById(siswaId).session(session);
+      if (!siswa) {
+        console.warn(`Siswa dengan ID ${siswaId} tidak ditemukan.`);
+        continue;
+      }
+
+      // Catat riwayat kelas sebelum pindah
+      const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
+        (riwayat) =>
+          riwayat.kelas.equals(fromKelasId) &&
+          riwayat.tahunAjaran === tahunAjaran
+      );
+      if (!sudahAdaDiRiwayat) {
+        siswa.riwayatKelas.push({
+          kelas: fromKelasId,
+          tahunAjaran: tahunAjaran,
+          semester: semester,
+        });
+      }
+
+      if (status === "Naik Kelas") {
+        const targetKelasId = toKelasId || defaultToKelasId; // Prioritaskan ID individu
+        if (!targetKelasId) {
+          throw new Error(
+            `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
+          );
+        }
+        siswa.kelas = targetKelasId;
+        await Kelas.findByIdAndUpdate(
+          targetKelasId,
+          { $addToSet: { siswa: siswaId } },
+          { session }
+        );
+      } else if (status === "Lulus") {
+        siswa.kelas = null;
+        siswa.isActive = false; // Nonaktifkan siswa yang lulus
+      }
+      // Untuk "Tinggal Kelas", tidak ada perubahan pada field 'kelas' siswa
+      await siswa.save({ session });
+    }
+
+    // Update daftar siswa di kelas lama
+    const siswaYangPindahAtauLulus = siswaData
+      .filter((s) => s.status === "Naik Kelas" || s.status === "Lulus")
+      .map((s) => s.siswaId);
+
+    await Kelas.findByIdAndUpdate(
+      fromKelasId,
+      { $pull: { siswa: { $in: siswaYangPindahAtauLulus } } },
+      { session }
+    );
+
+    await session.commitTransaction();
+    res.json({ message: "Proses kenaikan kelas berhasil diselesaikan." });
+  } catch (error) {
+    await session.abortTransaction();
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
 
 // ============= PENGATURAN APLIKASI =============
 exports.getSettings = async (req, res) => {
@@ -177,13 +384,12 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// ============= USER MANAGEMENT =============
+// ============= USER MANAGEMENT (DIPERBARUI) =============
 exports.importUsers = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "File Excel tidak ditemukan." });
   }
 
-  const filePath = req.file.path;
   const workbook = new ExcelJS.Workbook();
   const report = {
     berhasil: 0,
@@ -192,7 +398,10 @@ exports.importUsers = async (req, res) => {
   };
 
   try {
-    await workbook.xlsx.readFile(filePath);
+    // --- PERBAIKAN: Baca dari buffer memori, bukan dari file path ---
+    await workbook.xlsx.load(req.file.buffer);
+    // ----------------------------------------------------------------
+
     const worksheet = workbook.getWorksheet(1);
     const bulkOps = [];
     const identifiers = new Set();
@@ -279,14 +488,12 @@ exports.importUsers = async (req, res) => {
       report.berhasil = result.upsertedCount;
     }
 
-    fs.unlinkSync(filePath);
-
     res.status(200).json({
       message: "Proses impor selesai.",
       report,
     });
   } catch (error) {
-    fs.unlinkSync(filePath);
+    // --- PERBAIKAN: Tidak perlu lagi menghapus file karena tidak ada di disk ---
     res.status(500).json({
       message: "Terjadi kesalahan saat memproses file Excel.",
       error: error.message,
@@ -424,11 +631,30 @@ exports.updateUser = async (req, res) => {
       return res.status(404).json({ message: "User tidak ditemukan." });
     }
 
-    if (name) user.name = name;
-    if (email) user.email = email;
-    if (isActive !== undefined) user.isActive = isActive;
-
+    // --- LOGIKA BARU UNTUK RIWAYAT KELAS ---
     if (user.role === "siswa" && kelas && user.kelas?.toString() !== kelas) {
+      // Ambil pengaturan semester & tahun ajaran aktif
+      const settings = await Settings.getSettings();
+
+      // Cek apakah riwayat untuk periode ini sudah ada untuk menghindari duplikat
+      const sudahAdaDiRiwayat = user.riwayatKelas.some(
+        (riwayat) =>
+          riwayat.kelas.equals(user.kelas) &&
+          riwayat.tahunAjaran === settings.tahunAjaranAktif &&
+          riwayat.semester === settings.semesterAktif
+      );
+
+      // Jika ada kelas lama dan belum tercatat di riwayat untuk periode ini
+      if (user.kelas && !sudahAdaDiRiwayat) {
+        user.riwayatKelas.push({
+          kelas: user.kelas,
+          tahunAjaran: settings.tahunAjaranAktif,
+          semester: settings.semesterAktif,
+        });
+      }
+      // ---------------------------------------------
+
+      // Proses pemindahan siswa dari kelas lama ke kelas baru
       if (user.kelas) {
         await Kelas.findByIdAndUpdate(user.kelas, {
           $pull: { siswa: user._id },
@@ -437,6 +663,11 @@ exports.updateUser = async (req, res) => {
       user.kelas = kelas;
       await Kelas.findByIdAndUpdate(kelas, { $addToSet: { siswa: user._id } });
     }
+
+    // Update data umum
+    if (name) user.name = name;
+    if (email) user.email = email;
+    if (isActive !== undefined) user.isActive = isActive;
 
     await user.save();
 
@@ -447,7 +678,10 @@ exports.updateUser = async (req, res) => {
 
     res.json({ message: "User berhasil diupdate.", user: updatedUser });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
@@ -505,86 +739,6 @@ exports.resetPassword = async (req, res) => {
     res.json({ message: "Password berhasil direset ke identifier." });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
-// ============= ACADEMIC CYCLE MANAGEMENT =============
-exports.processPromotion = async (req, res) => {
-  const { siswaData, fromKelasId, tahunAjaran, semester } = req.body;
-
-  if (!siswaData || !fromKelasId || !tahunAjaran || !semester) {
-    return res.status(400).json({
-      message:
-        "Data siswa, kelas asal, tahun ajaran, dan semester wajib diisi.",
-    });
-  }
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const fromKelas = await Kelas.findById(fromKelasId).session(session);
-    if (!fromKelas) {
-      throw new Error("Kelas asal tidak ditemukan.");
-    }
-
-    for (const data of siswaData) {
-      const { siswaId, status, toKelasId } = data;
-      const siswa = await User.findById(siswaId).session(session);
-      if (!siswa) {
-        console.warn(`Siswa dengan ID ${siswaId} tidak ditemukan.`);
-        continue;
-      }
-
-      const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
-        (riwayat) =>
-          riwayat.kelas.equals(fromKelasId) &&
-          riwayat.tahunAjaran === tahunAjaran
-      );
-
-      if (!sudahAdaDiRiwayat) {
-        siswa.riwayatKelas.push({
-          kelas: fromKelasId,
-          tahunAjaran: tahunAjaran,
-          semester: semester,
-        });
-      }
-
-      if (status === "Naik Kelas") {
-        if (!toKelasId)
-          throw new Error(
-            `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
-          );
-        siswa.kelas = toKelasId;
-        await Kelas.findByIdAndUpdate(
-          toKelasId,
-          { $addToSet: { siswa: siswaId } },
-          { session }
-        );
-      } else if (status === "Lulus") {
-        siswa.kelas = null;
-        siswa.isActive = false;
-      }
-      await siswa.save({ session });
-    }
-
-    const siswaToStay = siswaData
-      .filter((s) => s.status === "Tinggal Kelas")
-      .map((s) => s.siswaId);
-
-    fromKelas.siswa = siswaToStay;
-    await fromKelas.save({ session });
-
-    await session.commitTransaction();
-    res.json({ message: "Proses kenaikan kelas berhasil diselesaikan." });
-  } catch (error) {
-    await session.abortTransaction();
-    res.status(500).json({
-      message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
-      error: error.message,
-    });
-  } finally {
-    session.endSession();
   }
 };
 

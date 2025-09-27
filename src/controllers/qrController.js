@@ -106,7 +106,7 @@ exports.generateQR = async (req, res) => {
     res.status(201).json({
       message: "QR Code berhasil dibuat.",
       qrCode: qrImageData,
-      kodeUnik,
+      kodeUnik, // <-- Pastikan frontend Anda menangkap dan menampilkan kode ini
       expiredAt,
       jadwal: {
         mataPelajaran: jadwal.mataPelajaran.nama,

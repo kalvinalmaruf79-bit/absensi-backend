@@ -1,11 +1,10 @@
 // src/routes/tugasRoutes.js
 const express = require("express");
 const router = express.Router();
-// Impor utility yang baru
 const createUploader = require("../middleware/uploadMiddleware");
 
-// Inisialisasi uploader khusus untuk tugas
-const tugasUploader = createUploader("jawaban-tugas", 20); // Maks 20MB
+// PERBAIKAN: Memanggil createUploader dengan argumen yang benar
+const tugasUploader = createUploader(20); // Maks 20MB, menggunakan default mimetypes
 
 const {
   createTugas,
@@ -27,7 +26,7 @@ router.post(
   "/:id/submit",
   authMiddleware,
   verifySiswa,
-  tugasUploader.single("file"), // Hanya 1 file
+  tugasUploader.single("file"),
   submitTugas
 );
 router.get(

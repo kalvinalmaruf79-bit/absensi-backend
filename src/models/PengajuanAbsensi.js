@@ -12,6 +12,13 @@ const pengajuanAbsensiSchema = new mongoose.Schema(
       type: String, // Format YYYY-MM-DD
       required: true,
     },
+    jadwalTerkait: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Jadwal",
+        required: true,
+      },
+    ],
     keterangan: {
       type: String,
       enum: ["izin", "sakit"],
@@ -23,7 +30,8 @@ const pengajuanAbsensiSchema = new mongoose.Schema(
       trim: true,
     },
     fileBukti: {
-      type: String, // Path ke file bukti (misal: surat dokter)
+      url: String, // Path ke file bukti
+      public_id: String, // ID dari Cloudinary
     },
     status: {
       type: String,
@@ -32,7 +40,7 @@ const pengajuanAbsensiSchema = new mongoose.Schema(
     },
     ditinjauOleh: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User", // Guru/Wali Kelas/Admin
+      ref: "User",
     },
   },
   { timestamps: true }

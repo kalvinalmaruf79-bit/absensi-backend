@@ -3,17 +3,51 @@ const PengajuanAbsensi = require("../models/PengajuanAbsensi");
 const Absensi = require("../models/Absensi");
 const User = require("../models/User");
 const Kelas = require("../models/Kelas");
-const fs = require("fs");
+const Jadwal = require("../models/Jadwal");
+const { uploadFromBuffer, deleteFile } = require("../utils/cloudinary"); // Impor utilitas Cloudinary
+const mongoose = require("mongoose");
 
-// Siswa: Membuat pengajuan izin/sakit baru
+// Siswa: Membuat pengajuan izin/sakit baru (DIPERBARUI DENGAN CLOUDINARY)
 exports.createPengajuan = async (req, res) => {
   try {
-    const { tanggal, keterangan, alasan } = req.body;
-    if (!tanggal || !keterangan || !alasan) {
-      if (req.file) fs.unlinkSync(req.file.path);
+    const { tanggal, keterangan, alasan, jadwalIds } = req.body;
+
+    if (!tanggal || !keterangan || !alasan || !jadwalIds) {
+      return res.status(400).json({
+        message: "Tanggal, keterangan, alasan, dan jadwal wajib diisi.",
+      });
+    }
+
+    let parsedJadwalIds;
+    try {
+      parsedJadwalIds = JSON.parse(jadwalIds);
+      if (!Array.isArray(parsedJadwalIds) || parsedJadwalIds.length === 0) {
+        throw new Error();
+      }
+    } catch (error) {
+      return res.status(400).json({
+        message: "Format 'jadwalIds' harus berupa array JSON string.",
+      });
+    }
+
+    const siswa = await User.findById(req.user.id);
+    const jadwalValid = await Jadwal.find({
+      _id: { $in: parsedJadwalIds },
+      kelas: siswa.kelas,
+    });
+    if (jadwalValid.length !== parsedJadwalIds.length) {
       return res
         .status(400)
-        .json({ message: "Tanggal, keterangan, dan alasan wajib diisi." });
+        .json({ message: "Satu atau lebih jadwal tidak valid." });
+    }
+
+    let fileBuktiData = {};
+    if (req.file) {
+      const result = await uploadFromBuffer(req.file.buffer, "bukti-absensi");
+      fileBuktiData = {
+        url: result.secure_url,
+        public_id: result.public_id,
+      };
     }
 
     const pengajuan = new PengajuanAbsensi({
@@ -21,7 +55,8 @@ exports.createPengajuan = async (req, res) => {
       tanggal,
       keterangan,
       alasan,
-      fileBukti: req.file ? req.file.path : null,
+      jadwalTerkait: parsedJadwalIds,
+      fileBukti: fileBuktiData,
     });
 
     await pengajuan.save();
@@ -29,16 +64,24 @@ exports.createPengajuan = async (req, res) => {
       .status(201)
       .json({ message: "Pengajuan berhasil dikirim.", data: pengajuan });
   } catch (error) {
-    if (req.file) fs.unlinkSync(req.file.path);
-    res.status(500).json({ message: "Gagal membuat pengajuan." });
+    // --- PERBAIKAN: Tidak ada lagi file di disk untuk dihapus ---
+    res.status(500).json({
+      message: "Gagal membuat pengajuan.",
+      error: error.message,
+    });
   }
 };
 
-// Siswa: Melihat riwayat pengajuannya
+// Siswa: Melihat riwayat pengajuannya (Tidak berubah)
 exports.getPengajuanSiswa = async (req, res) => {
   try {
     const riwayat = await PengajuanAbsensi.find({ siswa: req.user.id })
       .populate("ditinjauOleh", "name")
+      .populate({
+        path: "jadwalTerkait",
+        select: "mataPelajaran jamMulai jamSelesai",
+        populate: { path: "mataPelajaran", select: "nama" },
+      })
       .sort({ createdAt: -1 });
     res.json(riwayat);
   } catch (error) {
@@ -46,7 +89,7 @@ exports.getPengajuanSiswa = async (req, res) => {
   }
 };
 
-// Guru/Admin: Melihat semua pengajuan yang masuk
+// Guru/Admin: Melihat semua pengajuan yang masuk (Tidak berubah)
 exports.getAllPengajuan = async (req, res) => {
   try {
     const { status, tanggal } = req.query;
@@ -66,6 +109,11 @@ exports.getAllPengajuan = async (req, res) => {
         path: "siswa",
         populate: { path: "kelas", select: "nama" },
       })
+      .populate({
+        path: "jadwalTerkait",
+        select: "mataPelajaran jamMulai jamSelesai",
+        populate: { path: "mataPelajaran", select: "nama" },
+      })
       .sort({ createdAt: -1 });
     res.json(daftarPengajuan);
   } catch (error) {
@@ -73,7 +121,7 @@ exports.getAllPengajuan = async (req, res) => {
   }
 };
 
-// Guru/Admin: Meninjau (menyetujui/menolak) pengajuan
+// Guru/Admin: Meninjau (menyetujui/menolak) pengajuan (Tidak berubah)
 exports.reviewPengajuan = async (req, res) => {
   try {
     const { id } = req.params;
@@ -95,16 +143,11 @@ exports.reviewPengajuan = async (req, res) => {
         .json({ message: "Pengajuan ini sudah pernah ditinjau." });
     }
 
+    // Autorisasi Wali Kelas
     if (req.user.role !== "super_admin") {
-      if (!req.kelasWali) {
-        return res
-          .status(403)
-          .json({ message: "Anda bukan wali kelas aktif." });
-      }
-      const isSiswaWali = req.kelasWali.siswa.some((idSiswa) =>
-        idSiswa.equals(pengajuan.siswa)
-      );
-      if (!isSiswaWali) {
+      const siswa = await User.findById(pengajuan.siswa);
+      const kelasSiswa = await Kelas.findOne({ siswa: siswa._id });
+      if (!kelasSiswa.waliKelas || !kelasSiswa.waliKelas.equals(req.user.id)) {
         return res
           .status(403)
           .json({ message: "Anda tidak berhak meninjau pengajuan siswa ini." });
@@ -115,32 +158,22 @@ exports.reviewPengajuan = async (req, res) => {
     pengajuan.ditinjauOleh = req.user.id;
     await pengajuan.save();
 
-    // PERBAIKAN LOGIKA: Menggunakan upsert untuk membuat atau memperbarui catatan absensi
     if (status === "disetujui") {
-      // Cari semua jadwal siswa pada hari pengajuan
-      const jadwalSiswaHariIni = await Jadwal.find({
-        kelas: req.kelasWali.id, // ID kelas dari middleware
-        hari: new Date(pengajuan.tanggal)
-          .toLocaleDateString("id-ID", { weekday: "long" })
-          .toLowerCase(),
-      });
-
-      for (const jadwal of jadwalSiswaHariIni) {
+      for (const jadwalId of pengajuan.jadwalTerkait) {
         await Absensi.findOneAndUpdate(
           {
             siswa: pengajuan.siswa,
-            jadwal: jadwal._id,
+            jadwal: jadwalId,
             tanggal: pengajuan.tanggal,
           },
           {
             $set: {
               keterangan: pengajuan.keterangan,
-              // Data dummy karena tidak ada sesi check-in
               sesiPresensi: new mongoose.Types.ObjectId(),
               lokasiSiswa: { latitude: 0, longitude: 0 },
             },
           },
-          { upsert: true } // Membuat dokumen baru jika tidak ditemukan
+          { upsert: true }
         );
       }
     }

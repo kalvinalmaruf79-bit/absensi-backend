@@ -5,7 +5,7 @@ const Jadwal = require("../models/Jadwal");
 const Absensi = require("../models/Absensi");
 const Nilai = require("../models/Nilai");
 const Kelas = require("../models/Kelas");
-const Pengumuman = require("../models/Pengumuman"); // Impor model Pengumuman
+const Pengumuman = require("../models/Pengumuman");
 const ExcelJS = require("exceljs");
 
 // ============= DASHBOARD & PROFILE =============
@@ -29,7 +29,6 @@ exports.getDashboard = async (req, res) => {
       "sabtu",
     ][new Date().getDay()];
 
-    // --- QUERY BARU UNTUK PENGUMUMAN ---
     const [jadwalHariIni, jadwalGuru, pengumumanTerbaru] = await Promise.all([
       Jadwal.find({
         guru: guru._id,
@@ -45,10 +44,9 @@ exports.getDashboard = async (req, res) => {
         $or: [{ targetRole: "semua" }, { targetRole: "guru" }],
       })
         .sort({ createdAt: -1 })
-        .limit(5) // Ambil 5 terbaru
+        .limit(5)
         .populate("pembuat", "name role"),
     ]);
-    // ------------------------------------
 
     const totalSiswa = await User.countDocuments({
       role: "siswa",
@@ -63,7 +61,7 @@ exports.getDashboard = async (req, res) => {
         mataPelajaran: guru.mataPelajaran || [],
       },
       jadwalHariIni,
-      pengumumanTerbaru, // Tambahkan ke response
+      pengumumanTerbaru,
       statistik: {
         totalMataPelajaran: guru.mataPelajaran ? guru.mataPelajaran.length : 0,
         totalKelas: jadwalGuru.length,
@@ -614,13 +612,100 @@ exports.exportNilai = async (req, res) => {
   }
 };
 
-// ============= ANALISIS KINERJA SISWA =============
+// ============= ANALISIS KINERJA SISWA (IMPLEMENTASI BARU) =============
 exports.getAnalisisKinerjaSiswa = async (req, res) => {
   try {
-    res.status(501).json({
-      message: "Fungsi analisis belum diimplementasikan.",
+    const { siswaId, tahunAjaran, semester } = req.query;
+    if (!siswaId) {
+      return res
+        .status(400)
+        .json({ message: "Parameter 'siswaId' wajib diisi." });
+    }
+
+    const siswa = await User.findById(siswaId);
+    if (!siswa || siswa.role !== "siswa") {
+      return res.status(404).json({ message: "Siswa tidak ditemukan." });
+    }
+
+    // 1. Tren Nilai Rata-rata per Semester (untuk Grafik Garis)
+    const trenNilai = await Nilai.aggregate([
+      { $match: { siswa: new mongoose.Types.ObjectId(siswaId) } },
+      {
+        $group: {
+          _id: { tahunAjaran: "$tahunAjaran", semester: "$semester" },
+          rataRata: { $avg: "$nilai" },
+        },
+      },
+      { $sort: { "_id.tahunAjaran": 1, "_id.semester": 1 } },
+      {
+        $project: {
+          _id: 0,
+          periode: { $concat: ["$_id.semester", " ", "$_id.tahunAjaran"] },
+          rataRata: { $round: ["$rataRata", 2] },
+        },
+      },
+    ]);
+
+    // Jika parameter semester & tahun ajaran ada, hitung data perbandingan
+    let perbandinganNilai = [];
+    if (tahunAjaran && semester) {
+      // 2a. Rata-rata nilai siswa per jenis penilaian
+      const nilaiSiswaPerJenis = await Nilai.aggregate([
+        {
+          $match: {
+            siswa: new mongoose.Types.ObjectId(siswaId),
+            tahunAjaran: tahunAjaran,
+            semester: semester,
+          },
+        },
+        {
+          $group: {
+            _id: "$jenisPenilaian",
+            rataRata: { $avg: "$nilai" },
+          },
+        },
+      ]);
+
+      // 2b. Rata-rata nilai kelas per jenis penilaian
+      const nilaiKelasPerJenis = await Nilai.aggregate([
+        {
+          $match: {
+            kelas: siswa.kelas, // Mengambil kelas aktif siswa
+            tahunAjaran: tahunAjaran,
+            semester: semester,
+          },
+        },
+        {
+          $group: {
+            _id: "$jenisPenilaian",
+            rataRata: { $avg: "$nilai" },
+          },
+        },
+      ]);
+
+      // Gabungkan data untuk perbandingan (untuk Grafik Radar/Batang)
+      const mapKelas = new Map(
+        nilaiKelasPerJenis.map((item) => [item._id, item.rataRata])
+      );
+      perbandinganNilai = nilaiSiswaPerJenis.map((item) => ({
+        jenisPenilaian: item._id,
+        nilaiSiswa: Math.round(item.rataRata * 100) / 100,
+        rataRataKelas: Math.round((mapKelas.get(item._id) || 0) * 100) / 100,
+      }));
+    }
+
+    res.json({
+      message: `Analisis Kinerja untuk ${siswa.name}`,
+      data: {
+        trenNilai,
+        perbandinganNilai,
+      },
     });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error getting analisis kinerja:", error);
+    res.status(500).json({
+      message: "Gagal mengambil data analisis kinerja.",
+      error: error.message,
+    });
   }
 };

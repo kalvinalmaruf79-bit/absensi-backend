@@ -1,24 +1,27 @@
 // src/controllers/materiController.js
 const Materi = require("../models/Materi");
-const fs = require("fs");
-const path = require("path");
+const { uploadFromBuffer, deleteFile } = require("../utils/cloudinary");
 
 exports.createMateri = async (req, res) => {
   try {
     const { judul, deskripsi, mataPelajaran, kelas, parsedLinks } = req.body;
 
     if (!judul || !deskripsi || !mataPelajaran || !kelas) {
-      if (req.files) {
-        req.files.forEach((file) => fs.unlinkSync(file.path));
-      }
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
 
-    const files = req.files?.map((file) => ({
-      fileName: file.originalname,
-      filePath: file.path,
-      fileType: file.mimetype,
-    }));
+    let filesToSave = [];
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        const result = await uploadFromBuffer(file.buffer, "materi-pelajaran");
+        filesToSave.push({
+          fileName: file.originalname,
+          url: result.secure_url,
+          public_id: result.public_id,
+          fileType: file.mimetype,
+        });
+      }
+    }
 
     const materi = new Materi({
       judul,
@@ -26,7 +29,7 @@ exports.createMateri = async (req, res) => {
       mataPelajaran,
       kelas,
       guru: req.user.id,
-      files: files || [],
+      files: filesToSave,
       links: parsedLinks,
     });
 
@@ -34,8 +37,12 @@ exports.createMateri = async (req, res) => {
     res.status(201).json({ message: "Materi berhasil dibuat.", materi });
   } catch (error) {
     console.error("Error creating materi:", error);
-    if (req.files) {
-      req.files.forEach((file) => fs.unlinkSync(file.path));
+    // Jika terjadi error, hapus file yang mungkin sudah terunggah ke Cloudinary
+    // (Implementasi rollback sederhana)
+    if (filesToSave && filesToSave.length > 0) {
+      for (const file of filesToSave) {
+        await deleteFile(file.public_id);
+      }
     }
     res
       .status(500)
@@ -43,7 +50,6 @@ exports.createMateri = async (req, res) => {
   }
 };
 
-// Siswa & Guru: Mendapatkan materi (DIPERBARUI)
 exports.getMateri = async (req, res) => {
   try {
     const { kelasId, mataPelajaranId } = req.query;
@@ -53,18 +59,14 @@ exports.getMateri = async (req, res) => {
       });
     }
 
-    // --- LOGIKA BARU DIMULAI DI SINI ---
     let filter = {
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
     };
 
-    // Jika user adalah siswa, hanya tampilkan materi yang sudah di-publish
     if (req.user.role === "siswa") {
       filter.isPublished = true;
     }
-    // Guru bisa melihat semua materi (published dan draft)
-    // --- LOGIKA BARU SELESAI DI SINI ---
 
     const materi = await Materi.find(filter)
       .populate("guru", "name")
@@ -76,7 +78,6 @@ exports.getMateri = async (req, res) => {
   }
 };
 
-// --- FUNGSI BARU UNTUK TOGGLE PUBLISH ---
 exports.togglePublishMateri = async (req, res) => {
   try {
     const { id } = req.params;
@@ -92,7 +93,6 @@ exports.togglePublishMateri = async (req, res) => {
         .json({ message: "Anda tidak berhak mengubah materi ini." });
     }
 
-    // Balikkan status isPublished
     materi.isPublished = !materi.isPublished;
     await materi.save();
 
@@ -108,7 +108,6 @@ exports.togglePublishMateri = async (req, res) => {
   }
 };
 
-// Guru: Update materi
 exports.updateMateri = async (req, res) => {
   try {
     const { id } = req.params;
@@ -137,7 +136,6 @@ exports.updateMateri = async (req, res) => {
   }
 };
 
-// Guru: Hapus materi
 exports.deleteMateri = async (req, res) => {
   try {
     const { id } = req.params;
@@ -153,17 +151,18 @@ exports.deleteMateri = async (req, res) => {
         .json({ message: "Anda tidak berhak menghapus materi ini." });
     }
 
+    // Hapus semua file terkait dari Cloudinary
     if (materi.files && materi.files.length > 0) {
-      materi.files.forEach((file) => {
-        if (fs.existsSync(file.filePath)) {
-          fs.unlinkSync(file.filePath);
+      for (const file of materi.files) {
+        if (file.public_id) {
+          await deleteFile(file.public_id);
         }
-      });
+      }
     }
 
     await Materi.findByIdAndDelete(id);
 
-    res.json({ message: "Materi berhasil dihapus." });
+    res.json({ message: "Materi dan semua file terkait berhasil dihapus." });
   } catch (error) {
     console.error("Error deleting materi:", error);
     res.status(500).json({ message: "Gagal menghapus materi." });
