@@ -11,15 +11,5 @@
       "src": "/(.*)",
       "dest": "index.js"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/presence-reminder",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/notify-late-students",
-      "schedule": "*/15 * * * *"
-    }
   ]
 }
