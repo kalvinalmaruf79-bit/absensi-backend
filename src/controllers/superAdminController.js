@@ -475,6 +475,7 @@ exports.importUsers = async (req, res) => {
       const role = row.getCell(4).text.trim().toLowerCase();
       const kelasNama = row.getCell(5).text.trim();
       let tahunAjaran = row.getCell(6).text.trim();
+      const isTahunAjaranKosong = !tahunAjaran; // Track apakah tahun ajaran kosong dari awal
 
       // Skip baris kosong
       if (!name && !email && !identifier && !role) {
@@ -587,7 +588,13 @@ exports.importUsers = async (req, res) => {
             (k) => normalizeString(k.nama) === normalizeString(kelasNama)
           );
 
-          let errorMessage = `Kelas '${kelasNama}' untuk tahun ajaran '${tahunAjaran}' tidak ditemukan.`;
+          let errorMessage = `Kelas '${kelasNama}' untuk tahun ajaran '${tahunAjaran}' tidak ditemukan`;
+
+          // PERBAIKAN: Informasikan jika menggunakan TA aktif
+          if (isTahunAjaranKosong) {
+            errorMessage += ` (menggunakan tahun ajaran aktif)`;
+          }
+          errorMessage += `.`;
 
           if (alternativeKelas.length > 0) {
             const availableYears = alternativeKelas
