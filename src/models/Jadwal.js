@@ -1,5 +1,6 @@
 // models/Jadwal.js
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
 
 const jadwalSchema = new mongoose.Schema(
   {
@@ -62,5 +63,8 @@ jadwalSchema.index(
   },
   { unique: true }
 );
+
+// 2. Tambahkan plugin ke skema
+jadwalSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("Jadwal", jadwalSchema);

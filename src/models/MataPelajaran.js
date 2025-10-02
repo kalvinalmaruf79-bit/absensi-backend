@@ -1,5 +1,6 @@
 // models/MataPelajaran.js
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
 
 const mataPelajaranSchema = new mongoose.Schema(
   {
@@ -26,5 +27,8 @@ const mataPelajaranSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// 2. Tambahkan plugin ke skema
+mataPelajaranSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("MataPelajaran", mataPelajaranSchema);

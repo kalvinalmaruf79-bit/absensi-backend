@@ -1,5 +1,6 @@
 // models/User.js
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
 
 const userSchema = new mongoose.Schema(
   {
@@ -39,14 +40,12 @@ const userSchema = new mongoose.Schema(
       },
     ],
 
-    // --- FIELD BARU DIMULAI DI SINI ---
     // Menyimpan token untuk push notification
     deviceTokens: [
       {
         type: String,
       },
     ],
-    // --- FIELD BARU SELESAI DI SINI ---
 
     // Status akun
     isActive: { type: Boolean, default: true },
@@ -62,5 +61,8 @@ const userSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// 2. Tambahkan plugin ke skema
+userSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("User", userSchema);

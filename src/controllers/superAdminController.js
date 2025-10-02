@@ -585,20 +585,56 @@ exports.createGuru = async (req, res) => {
   }
 };
 
+/**
+ * @summary Get All Users with Pagination and Search
+ */
 exports.getAllUsers = async (req, res) => {
   try {
-    const { role, isActive } = req.query;
-    let filter = {};
-    if (role && role !== "all") filter.role = role;
-    if (isActive !== undefined) filter.isActive = isActive === "true";
+    // 1. Ambil parameter query untuk pagination dan filter
+    const {
+      role,
+      isActive,
+      search,
+      page = 1,
+      limit = 10,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+    } = req.query;
 
-    const users = await User.find(filter)
-      .populate("mataPelajaran", "nama kode")
-      .populate("kelas", "nama tingkat jurusan")
-      .select("-password")
-      .sort({ createdAt: -1 });
+    // 2. Buat objek query dasar untuk Mongoose
+    let query = {};
+    if (role && role !== "all") {
+      query.role = role;
+    }
+    if (isActive !== undefined) {
+      query.isActive = isActive === "true";
+    }
+    if (search) {
+      const searchRegex = new RegExp(search, "i"); // 'i' for case-insensitive
+      query.$or = [
+        { name: searchRegex },
+        { email: searchRegex },
+        { identifier: searchRegex },
+      ];
+    }
 
-    res.json(users);
+    // 3. Konfigurasi options untuk mongoose-paginate-v2
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { [sortBy]: sortOrder === "asc" ? 1 : -1 },
+      populate: [
+        { path: "mataPelajaran", select: "nama kode" },
+        { path: "kelas", select: "nama tingkat jurusan" },
+      ],
+      select: "-password", // Jangan pernah kirim password ke client
+    };
+
+    // 4. Jalankan query menggunakan metode .paginate()
+    const result = await User.paginate(query, options);
+
+    // 5. Kirim hasil sebagai response
+    res.json(result);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
@@ -771,13 +807,49 @@ exports.createMataPelajaran = async (req, res) => {
   }
 };
 
+/**
+ * @summary Get All Mata Pelajaran with Pagination and Search
+ */
 exports.getAllMataPelajaran = async (req, res) => {
   try {
-    const mataPelajaran = await MataPelajaran.find({})
-      .populate("guru", "name identifier")
-      .populate("createdBy", "name")
-      .sort({ nama: 1 });
-    res.json(mataPelajaran);
+    const {
+      isActive,
+      search,
+      page = 1,
+      limit = 10,
+      sortBy = "nama",
+      sortOrder = "asc",
+    } = req.query;
+
+    let query = {};
+    if (isActive !== undefined) {
+      query.isActive = isActive === "true";
+    }
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [{ nama: searchRegex }, { kode: searchRegex }];
+    }
+
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { [sortBy]: sortOrder === "asc" ? 1 : -1 },
+      populate: [
+        { path: "guru", select: "name identifier" },
+        { path: "createdBy", select: "name" },
+      ],
+    };
+
+    const result = await MataPelajaran.paginate(query, options);
+
+    // Manually add guruCount to each document
+    const finalData = result.docs.map((mapel) => {
+      const mapelObj = mapel.toObject();
+      mapelObj.jumlahGuru = mapelObj.guru.length;
+      return mapelObj;
+    });
+
+    res.json({ ...result, docs: finalData });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
@@ -1024,25 +1096,70 @@ exports.updateKelas = async (req, res) => {
 };
 
 /**
- * Get All Kelas - Filter berdasarkan status aktif
+ * @summary Get All Kelas with Pagination and Search
  */
 exports.getAllKelas = async (req, res) => {
   try {
-    const { includeInactive } = req.query;
+    const {
+      isActive,
+      search,
+      page = 1,
+      limit = 10,
+      sortBy = "tingkat",
+      sortOrder = "asc",
+    } = req.query;
 
-    // By default hanya tampilkan kelas aktif
-    const filter = includeInactive === "true" ? {} : { isActive: true };
+    let query = {};
+    // By default, filter by active. If includeInactive is true, don't filter by isActive.
+    if (isActive !== undefined) {
+      query.isActive = isActive === "true";
+    }
 
-    const kelas = await Kelas.find(filter)
-      .populate("waliKelas", "name identifier")
-      .populate("siswa", "name identifier")
-      .populate("createdBy", "name")
-      .sort({ tingkat: 1, nama: 1 });
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [
+        { nama: searchRegex },
+        { tingkat: searchRegex },
+        { jurusan: searchRegex },
+        { tahunAjaran: searchRegex },
+      ];
+    }
+
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { [sortBy]: sortOrder === "asc" ? 1 : -1 },
+      populate: [
+        { path: "waliKelas", select: "name identifier" },
+        { path: "createdBy", select: "name" },
+      ],
+      // Custom population to get the count of students
+      // This is a more advanced feature of the plugin
+      customLabels: {
+        docs: "data",
+        totalDocs: "totalData",
+      },
+    };
+
+    const result = await Kelas.paginate(query, options);
+
+    // Manually add siswaCount to each document
+    const populatedResult = await Kelas.populate(result.data, {
+      path: "siswa",
+      select: "_id", // Only need the ID to count
+    });
+
+    const finalData = populatedResult.map((kelas) => {
+      const kelasObj = kelas.toObject();
+      kelasObj.jumlahSiswa = kelasObj.siswa.length;
+      delete kelasObj.siswa; // Remove the full siswa array from final response
+      return kelasObj;
+    });
 
     res.json({
       success: true,
-      data: kelas,
-      count: kelas.length,
+      ...result,
+      data: finalData,
     });
   } catch (error) {
     console.error("Error getting kelas:", error);
@@ -1451,14 +1568,46 @@ exports.createJadwal = async (req, res) => {
   }
 };
 
+/**
+ * @summary Get All Jadwal with Pagination and Advanced Filtering
+ */
 exports.getAllJadwal = async (req, res) => {
   try {
-    const jadwal = await Jadwal.find({ isActive: true })
-      .populate("kelas", "nama tingkat jurusan")
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name identifier")
-      .sort({ hari: 1, jamMulai: 1 });
-    res.json(jadwal);
+    const {
+      isActive,
+      kelasId,
+      guruId,
+      hari,
+      semester,
+      tahunAjaran,
+      page = 1,
+      limit = 10,
+    } = req.query;
+
+    let query = {};
+    if (isActive !== undefined) {
+      query.isActive = isActive === "true";
+    }
+    if (kelasId) query.kelas = kelasId;
+    if (guruId) query.guru = guruId;
+    if (hari) query.hari = hari;
+    if (semester) query.semester = semester;
+    if (tahunAjaran) query.tahunAjaran = tahunAjaran;
+
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { hari: 1, jamMulai: 1 },
+      populate: [
+        { path: "kelas", select: "nama tingkat jurusan" },
+        { path: "mataPelajaran", select: "nama kode" },
+        { path: "guru", select: "name identifier" },
+      ],
+    };
+
+    const result = await Jadwal.paginate(query, options);
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
