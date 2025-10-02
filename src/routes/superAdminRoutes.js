@@ -23,6 +23,9 @@ const {
   getMataPelajaranById,
   updateMataPelajaran,
   deleteMataPelajaran,
+  forceDeleteMataPelajaran, // TAMBAHAN BARU
+  restoreMataPelajaran, // TAMBAHAN BARU
+  getMataPelajaranStats, // TAMBAHAN BARU
   assignGuruMataPelajaran,
   unassignGuruMataPelajaran,
   createKelas,
@@ -30,9 +33,9 @@ const {
   getKelasById,
   updateKelas,
   deleteKelas,
-  forceDeleteKelas, // TAMBAHAN BARU
-  restoreKelas, // TAMBAHAN BARU
-  getKelasStats, // TAMBAHAN BARU
+  forceDeleteKelas,
+  restoreKelas,
+  getKelasStats,
   createJadwal,
   getAllJadwal,
   updateJadwal,
@@ -45,9 +48,8 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
-// PERBAIKAN: Memanggil createUploader dengan argumen yang benar
 const excelUploader = createUploader(5, [
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // MIME type untuk .xlsx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ]);
 
 router.use(authMiddleware, verifySuperAdmin, checkUserActive);
@@ -77,30 +79,34 @@ router.get("/academic/promotion-recommendation", getPromotionRecommendation);
 router.post("/academic/promote", processPromotion);
 
 // Mata Pelajaran Management
-router.post("/mata-pelajaran", createMataPelajaran);
+// Get all mata pelajaran
 router.get("/mata-pelajaran", getAllMataPelajaran);
+// Create mata pelajaran
+router.post("/mata-pelajaran", createMataPelajaran);
+// Assign/Unassign guru
 router.put("/mata-pelajaran/assign-guru", assignGuruMataPelajaran);
 router.put("/mata-pelajaran/unassign-guru", unassignGuruMataPelajaran);
+// Get mata pelajaran stats (detail info sebelum delete) - HARUS DI ATAS :id route
+router.get("/mata-pelajaran/:id/stats", getMataPelajaranStats);
+// Get mata pelajaran by id
 router.get("/mata-pelajaran/:id", getMataPelajaranById);
+// Update mata pelajaran
 router.put("/mata-pelajaran/:id", updateMataPelajaran);
+// Restore mata pelajaran (aktifkan kembali)
+router.put("/mata-pelajaran/:id/restore", restoreMataPelajaran);
+// Soft delete mata pelajaran (nonaktifkan)
 router.delete("/mata-pelajaran/:id", deleteMataPelajaran);
+// Force delete mata pelajaran (hapus permanen) - HARUS DI BAWAH route :id
+router.delete("/mata-pelajaran/:id/force", forceDeleteMataPelajaran);
 
 // Kelas Management
-// Get all kelas (with optional includeInactive)
 router.get("/kelas", getAllKelas);
-// Get kelas stats (detail info sebelum delete) - HARUS DI ATAS :id route
 router.get("/kelas/:id/stats", getKelasStats);
-// Get kelas by id
 router.get("/kelas/:id", getKelasById);
-// Create kelas
 router.post("/kelas", createKelas);
-// Update kelas
 router.put("/kelas/:id", updateKelas);
-// Restore kelas (aktifkan kembali)
 router.put("/kelas/:id/restore", restoreKelas);
-// Soft delete kelas (nonaktifkan)
 router.delete("/kelas/:id", deleteKelas);
-// Force delete kelas (hapus permanen) - HARUS DI BAWAH route /kelas/:id
 router.delete("/kelas/:id/force", forceDeleteKelas);
 
 // Jadwal Management

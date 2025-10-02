@@ -961,6 +961,65 @@ exports.resetPassword = async (req, res) => {
 };
 
 // ============= MATA PELAJARAN MANAGEMENT =============
+exports.getMataPelajaranStats = async (req, res) => {
+  try {
+    const mapelId = req.params.id;
+    const mataPelajaran = await MataPelajaran.findById(mapelId)
+      .populate("guru", "name identifier")
+      .populate("createdBy", "name");
+
+    if (!mataPelajaran) {
+      return res.status(404).json({
+        success: false,
+        message: "Mata pelajaran tidak ditemukan.",
+      });
+    }
+
+    const [jumlahJadwal, jumlahNilai, jumlahTugas, jumlahMateri] =
+      await Promise.all([
+        Jadwal.countDocuments({ mataPelajaran: mapelId }),
+        Nilai.countDocuments({ mataPelajaran: mapelId }),
+        Tugas.countDocuments({ mataPelajaran: mapelId }),
+        Materi.countDocuments({ mataPelajaran: mapelId }),
+      ]);
+
+    res.json({
+      success: true,
+      mataPelajaran: {
+        _id: mataPelajaran._id,
+        nama: mataPelajaran.nama,
+        kode: mataPelajaran.kode,
+        deskripsi: mataPelajaran.deskripsi,
+        isActive: mataPelajaran.isActive,
+      },
+      stats: {
+        jumlahGuru: mataPelajaran.guru.length,
+        jumlahJadwal,
+        jumlahNilai,
+        jumlahTugas,
+        jumlahMateri,
+      },
+      guru: mataPelajaran.guru.map((g) => ({
+        _id: g._id,
+        name: g.name,
+        identifier: g.identifier,
+      })),
+      canSafeDelete: mataPelajaran.guru.length === 0 && jumlahNilai === 0,
+      recommendation:
+        mataPelajaran.guru.length === 0 && jumlahNilai === 0
+          ? "Aman untuk dihapus permanen"
+          : "Disarankan lepas penugasan guru terlebih dahulu atau gunakan soft delete",
+    });
+  } catch (error) {
+    console.error("Error getting mata pelajaran stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
 exports.createMataPelajaran = async (req, res) => {
   try {
     const { nama, kode, deskripsi } = req.body;
@@ -1092,7 +1151,153 @@ exports.deleteMataPelajaran = async (req, res) => {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
+exports.forceDeleteMataPelajaran = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
+  try {
+    const mapelId = req.params.id;
+    const mataPelajaran = await MataPelajaran.findById(mapelId).session(
+      session
+    );
+
+    if (!mataPelajaran) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "Mata pelajaran tidak ditemukan.",
+      });
+    }
+
+    // Hitung semua relasi data
+    const [jumlahGuru, jumlahJadwal, jumlahNilai, jumlahTugas, jumlahMateri] =
+      await Promise.all([
+        User.countDocuments({ mataPelajaran: mapelId }).session(session),
+        Jadwal.countDocuments({ mataPelajaran: mapelId }).session(session),
+        Nilai.countDocuments({ mataPelajaran: mapelId }).session(session),
+        Tugas.countDocuments({ mataPelajaran: mapelId }).session(session),
+        Materi.countDocuments({ mataPelajaran: mapelId }).session(session),
+      ]);
+
+    const dataRelasi = {
+      guru: jumlahGuru,
+      jadwal: jumlahJadwal,
+      nilai: jumlahNilai,
+      tugas: jumlahTugas,
+      materi: jumlahMateri,
+    };
+
+    const totalRelasi = Object.values(dataRelasi).reduce(
+      (sum, val) => sum + val,
+      0
+    );
+
+    // Jika ada data terkait dan belum konfirmasi, berikan warning
+    if (totalRelasi > 0 && req.query.confirm !== "yes") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Mata pelajaran ini memiliki ${totalRelasi} data terkait yang akan terhapus permanen!`,
+        warning: "PERHATIAN: Penghapusan permanen tidak dapat dibatalkan!",
+        dataRelasi,
+        totalRelasi,
+        actions: {
+          confirmDelete: {
+            method: "DELETE",
+            url: `/super-admin/mata-pelajaran/${mapelId}/force?confirm=yes`,
+            warning: "Akan menghapus SEMUA data terkait secara permanen",
+          },
+          alternative:
+            "Lepas penugasan guru terlebih dahulu, lalu hapus mata pelajaran kosong",
+        },
+      });
+    }
+
+    // Jika tidak ada data terkait atau sudah konfirmasi, hapus permanen
+    if (totalRelasi === 0 || req.query.confirm === "yes") {
+      // Hapus relasi di User (guru)
+      await User.updateMany(
+        { mataPelajaran: mapelId },
+        { $pull: { mataPelajaran: mapelId } },
+        { session }
+      );
+
+      // Hapus data terkait
+      await Promise.all([
+        Jadwal.deleteMany({ mataPelajaran: mapelId }, { session }),
+        Nilai.deleteMany({ mataPelajaran: mapelId }, { session }),
+        Tugas.deleteMany({ mataPelajaran: mapelId }, { session }),
+        Materi.deleteMany({ mataPelajaran: mapelId }, { session }),
+      ]);
+
+      // Hapus mata pelajaran permanen
+      await MataPelajaran.findByIdAndDelete(mapelId).session(session);
+
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message:
+          "Mata pelajaran dan semua data terkait berhasil dihapus permanen.",
+        deletedData: dataRelasi,
+      });
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error force deleting mata pelajaran:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+exports.restoreMataPelajaran = async (req, res) => {
+  try {
+    const mataPelajaran = await MataPelajaran.findById(req.params.id);
+
+    if (!mataPelajaran) {
+      return res.status(404).json({
+        success: false,
+        message: "Mata pelajaran tidak ditemukan.",
+      });
+    }
+
+    if (mataPelajaran.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Mata pelajaran sudah aktif.",
+      });
+    }
+
+    // Restore mata pelajaran
+    mataPelajaran.isActive = true;
+    await mataPelajaran.save();
+
+    // Aktifkan kembali jadwal terkait (opsional)
+    const jadwalUpdated = await Jadwal.updateMany(
+      { mataPelajaran: req.params.id },
+      { isActive: true }
+    );
+
+    res.json({
+      success: true,
+      message: "Mata pelajaran berhasil diaktifkan kembali.",
+      data: mataPelajaran,
+      jadwalRestored: jadwalUpdated.modifiedCount,
+    });
+  } catch (error) {
+    console.error("Error restoring mata pelajaran:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
 exports.assignGuruMataPelajaran = async (req, res) => {
   try {
     const { mataPelajaranId, guruId } = req.body;
