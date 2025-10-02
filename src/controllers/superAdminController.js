@@ -384,6 +384,7 @@ exports.getDashboard = async (req, res) => {
 };
 
 // ============= USER MANAGEMENT (DIPERBARUI) =============
+// Di superAdminController.js
 exports.importUsers = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "File Excel tidak ditemukan." });
@@ -394,6 +395,7 @@ exports.importUsers = async (req, res) => {
     berhasil: 0,
     gagal: 0,
     errors: [],
+    warnings: [],
   };
 
   try {
@@ -404,17 +406,66 @@ exports.importUsers = async (req, res) => {
     const identifiers = new Set();
     const emails = new Set();
 
-    const kelasCache = new Map();
-    const semuaKelas = await Kelas.find({}).select("nama _id");
+    // Ambil tahun ajaran aktif dari settings sebagai fallback
+    const settings = await Settings.getSettings();
+    const tahunAjaranAktif = settings.tahunAjaranAktif;
 
-    // Fungsi untuk menormalkan string (menghapus spasi berlebih)
+    // Cache semua kelas dengan kombinasi nama + tahun ajaran
+    const kelasCache = new Map();
+    const semuaKelas = await Kelas.find({ isActive: true }).select(
+      "nama tahunAjaran tingkat jurusan _id"
+    );
+
+    // Fungsi untuk menormalkan string
     const normalizeString = (str) =>
       str.toLowerCase().replace(/\s+/g, " ").trim();
 
+    // Build cache dengan key: "nama|tahunAjaran"
     semuaKelas.forEach((k) => {
-      kelasCache.set(normalizeString(k.nama), k._id);
+      const key = `${normalizeString(k.nama)}|${k.tahunAjaran}`;
+      kelasCache.set(key, {
+        id: k._id,
+        nama: k.nama,
+        tahunAjaran: k.tahunAjaran,
+        tingkat: k.tingkat,
+        jurusan: k.jurusan,
+      });
     });
 
+    // Validasi header Excel
+    const headerRow = worksheet.getRow(1);
+    const expectedHeaders = [
+      "nama",
+      "email",
+      "identifier",
+      "role",
+      "kelas",
+      "tahunajaran",
+    ];
+    const actualHeaders = [];
+    for (let i = 1; i <= 6; i++) {
+      actualHeaders.push(normalizeString(headerRow.getCell(i).text));
+    }
+
+    const hasValidHeaders = expectedHeaders.every((h) =>
+      actualHeaders.includes(h)
+    );
+    if (!hasValidHeaders) {
+      return res.status(400).json({
+        message: "Format header Excel tidak valid.",
+        expected: [
+          "nama",
+          "email",
+          "identifier",
+          "role",
+          "kelas",
+          "tahunAjaran",
+        ],
+        received: actualHeaders,
+      });
+    }
+
+    // Process setiap baris
     for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
       const row = worksheet.getRow(rowNumber);
 
@@ -423,6 +474,7 @@ exports.importUsers = async (req, res) => {
       const identifier = row.getCell(3).text.trim();
       const role = row.getCell(4).text.trim().toLowerCase();
       const kelasNama = row.getCell(5).text.trim();
+      let tahunAjaran = row.getCell(6).text.trim();
 
       // Skip baris kosong
       if (!name && !email && !identifier && !role) {
@@ -432,56 +484,130 @@ exports.importUsers = async (req, res) => {
       // Validasi data wajib
       if (!name || !email || !identifier || !role) {
         report.gagal++;
-        report.errors.push(
-          `Baris ${rowNumber}: Data tidak lengkap (nama, email, identifier, role wajib diisi).`
-        );
+        report.errors.push({
+          row: rowNumber,
+          message:
+            "Data tidak lengkap (nama, email, identifier, role wajib diisi).",
+          data: { name, email, identifier, role },
+        });
         continue;
       }
 
       // Validasi role
       if (!["siswa", "guru"].includes(role)) {
         report.gagal++;
-        report.errors.push(
-          `Baris ${rowNumber}: Role tidak valid, harus 'siswa' atau 'guru'.`
-        );
+        report.errors.push({
+          row: rowNumber,
+          message: "Role tidak valid, harus 'siswa' atau 'guru'.",
+          data: { role },
+        });
+        continue;
+      }
+
+      // Validasi format email
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        report.gagal++;
+        report.errors.push({
+          row: rowNumber,
+          message: "Format email tidak valid.",
+          data: { email },
+        });
         continue;
       }
 
       // Cek duplikasi dalam file
-      if (identifiers.has(identifier) || emails.has(email)) {
+      if (identifiers.has(identifier)) {
         report.gagal++;
-        report.errors.push(
-          `Baris ${rowNumber}: Email atau Identifier duplikat di dalam file.`
-        );
+        report.errors.push({
+          row: rowNumber,
+          message: "Identifier duplikat di dalam file.",
+          data: { identifier },
+        });
         continue;
       }
+      if (emails.has(email)) {
+        report.gagal++;
+        report.errors.push({
+          row: rowNumber,
+          message: "Email duplikat di dalam file.",
+          data: { email },
+        });
+        continue;
+      }
+
       identifiers.add(identifier);
       emails.add(email);
 
       let kelasId = null;
 
-      // PERBAIKAN UTAMA: Hanya validasi kelas jika role adalah siswa
+      // VALIDASI KHUSUS UNTUK SISWA
       if (role === "siswa") {
-        // Untuk siswa, kelas WAJIB diisi
+        // Kelas wajib untuk siswa
         if (!kelasNama) {
           report.gagal++;
-          report.errors.push(
-            `Baris ${rowNumber}: Nama kelas wajib diisi untuk siswa.`
-          );
+          report.errors.push({
+            row: rowNumber,
+            message: "Nama kelas wajib diisi untuk siswa.",
+            data: { name, identifier },
+          });
           continue;
         }
 
-        // Mencari kelas menggunakan nama yang sudah dinormalkan
-        kelasId = kelasCache.get(normalizeString(kelasNama));
-        if (!kelasId) {
+        // Jika tahun ajaran tidak diisi, gunakan tahun ajaran aktif
+        if (!tahunAjaran) {
+          tahunAjaran = tahunAjaranAktif;
+          report.warnings.push({
+            row: rowNumber,
+            message: `Tahun ajaran tidak diisi, menggunakan tahun ajaran aktif: ${tahunAjaranAktif}`,
+            data: { name, identifier },
+          });
+        }
+
+        // Validasi format tahun ajaran (YYYY/YYYY)
+        const tahunAjaranRegex = /^\d{4}\/\d{4}$/;
+        if (!tahunAjaranRegex.test(tahunAjaran)) {
           report.gagal++;
-          report.errors.push(
-            `Baris ${rowNumber}: Kelas '${kelasNama}' tidak ditemukan di database. Pastikan nama kelas sesuai persis.`
-          );
+          report.errors.push({
+            row: rowNumber,
+            message:
+              "Format tahun ajaran tidak valid. Gunakan format YYYY/YYYY (contoh: 2025/2026)",
+            data: { tahunAjaran },
+          });
           continue;
         }
+
+        // Cari kelas dengan kombinasi nama + tahun ajaran
+        const kelasKey = `${normalizeString(kelasNama)}|${tahunAjaran}`;
+        const kelasData = kelasCache.get(kelasKey);
+
+        if (!kelasData) {
+          // Cari apakah kelas dengan nama tersebut ada di tahun ajaran lain
+          const alternativeKelas = semuaKelas.filter(
+            (k) => normalizeString(k.nama) === normalizeString(kelasNama)
+          );
+
+          let errorMessage = `Kelas '${kelasNama}' untuk tahun ajaran '${tahunAjaran}' tidak ditemukan.`;
+
+          if (alternativeKelas.length > 0) {
+            const availableYears = alternativeKelas
+              .map((k) => k.tahunAjaran)
+              .join(", ");
+            errorMessage += ` Kelas '${kelasNama}' tersedia untuk tahun ajaran: ${availableYears}`;
+          }
+
+          report.gagal++;
+          report.errors.push({
+            row: rowNumber,
+            message: errorMessage,
+            data: { kelasNama, tahunAjaran },
+          });
+          continue;
+        }
+
+        kelasId = kelasData.id;
       }
-      // Untuk guru, kelasId tetap null (tidak perlu validasi kelas)
+      // Untuk guru, kelasId tetap null dan tahunAjaran diabaikan
 
       const hashedPassword = await bcrypt.hash(identifier, 10);
 
@@ -495,7 +621,7 @@ exports.importUsers = async (req, res) => {
               identifier,
               password: hashedPassword,
               role,
-              kelas: role === "siswa" ? kelasId : undefined, // Hanya set kelas jika siswa
+              kelas: role === "siswa" ? kelasId : undefined,
               isPasswordDefault: true,
             },
           },
@@ -504,12 +630,13 @@ exports.importUsers = async (req, res) => {
       });
     }
 
+    // Eksekusi bulk operations jika ada data valid
     if (bulkOps.length > 0) {
       const result = await User.bulkWrite(bulkOps);
       report.berhasil = result.upsertedCount;
 
       // Update array siswa di kelas untuk siswa yang baru diimport
-      if (result.upsertedIds) {
+      if (result.upsertedIds && Object.keys(result.upsertedIds).length > 0) {
         const siswaIds = Object.values(result.upsertedIds);
         const siswaBaru = await User.find({
           _id: { $in: siswaIds },
@@ -541,6 +668,7 @@ exports.importUsers = async (req, res) => {
       report,
     });
   } catch (error) {
+    console.error("Error importing users:", error);
     res.status(500).json({
       message: "Terjadi kesalahan saat memproses file Excel.",
       error: error.message,
