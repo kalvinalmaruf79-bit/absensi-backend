@@ -1,5 +1,6 @@
 // src/models/Notifikasi.js
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
 
 const notifikasiSchema = new mongoose.Schema(
   {
@@ -11,7 +12,13 @@ const notifikasiSchema = new mongoose.Schema(
     },
     tipe: {
       type: String,
-      enum: ["tugas_baru", "nilai_baru", "pengumuman_baru"],
+      enum: [
+        "tugas_baru",
+        "nilai_baru",
+        "pengumuman_baru",
+        "pengingat_presensi",
+        "presensi_alpa",
+      ], // Menambahkan tipe notifikasi baru dari cron job
       required: true,
     },
     judul: {
@@ -35,5 +42,8 @@ const notifikasiSchema = new mongoose.Schema(
 );
 
 notifikasiSchema.index({ penerima: 1, isRead: 1, createdAt: -1 });
+
+// 2. Tambahkan plugin ke skema
+notifikasiSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("Notifikasi", notifikasiSchema);

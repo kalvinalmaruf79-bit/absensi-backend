@@ -8,13 +8,20 @@ const Notifikasi = require("../models/Notifikasi");
 const Tugas = require("../models/Tugas");
 const ActivityLog = require("../models/ActivityLog"); // Impor model baru
 
-// --- FUNGSI BARU UNTUK MENGAMBIL HISTORI AKTIVITAS ---
+/**
+ * @summary Mengambil histori aktivitas siswa dengan pagination
+ */
 exports.getHistoriAktivitas = async (req, res) => {
   try {
-    const { limit = 25 } = req.query; // Default 25 log terbaru
-    const histori = await ActivityLog.find({ user: req.user.id })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit));
+    const { page = 1, limit = 15 } = req.query;
+    const query = { user: req.user.id };
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+    };
+
+    const histori = await ActivityLog.paginate(query, options);
     res.json(histori);
   } catch (error) {
     res.status(500).json({
@@ -23,7 +30,6 @@ exports.getHistoriAktivitas = async (req, res) => {
     });
   }
 };
-// ----------------------------------------------------
 
 exports.getJadwalByTanggal = async (req, res) => {
   try {
@@ -162,12 +168,19 @@ exports.getJadwalMendatang = async (req, res) => {
   }
 };
 
+/**
+ * @summary Mengambil notifikasi siswa dengan pagination
+ */
 exports.getNotifikasi = async (req, res) => {
   try {
-    const { limit = 20 } = req.query;
-    const notifikasi = await Notifikasi.find({ penerima: req.user.id })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit));
+    const { page = 1, limit = 20 } = req.query;
+    const query = { penerima: req.user.id };
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+    };
+    const notifikasi = await Notifikasi.paginate(query, options);
     res.json(notifikasi);
   } catch (error) {
     res.status(500).json({ message: "Gagal mengambil notifikasi." });
@@ -345,32 +358,50 @@ exports.getJadwalSiswa = async (req, res) => {
 
 exports.getNilaiSiswa = async (req, res) => {
   try {
-    const { tahunAjaran, semester } = req.query;
+    const { tahunAjaran, semester, page = 1, limit = 100 } = req.query; // Limit tinggi untuk 'semua' nilai per semester
     let filter = { siswa: req.user.id };
 
     if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
     if (semester) filter.semester = semester;
 
-    const nilai = await Nilai.find(filter)
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name");
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { tanggalPenilaian: -1 },
+      populate: [
+        { path: "mataPelajaran", select: "nama kode" },
+        { path: "guru", select: "name" },
+      ],
+    };
+
+    const nilai = await Nilai.paginate(filter, options);
     res.json(nilai);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
+/**
+ * @summary Mengambil riwayat presensi siswa dengan pagination
+ */
 exports.getRiwayatPresensi = async (req, res) => {
   try {
-    const presensi = await Absensi.find({ siswa: req.user.id })
-      .populate({
+    const { page = 1, limit = 15 } = req.query;
+    const query = { siswa: req.user.id };
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+      populate: {
         path: "jadwal",
         populate: {
           path: "mataPelajaran guru kelas",
           select: "nama kode name tingkat jurusan",
         },
-      })
-      .sort({ createdAt: -1 });
+      },
+    };
+
+    const presensi = await Absensi.paginate(query, options);
     res.json(presensi);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });

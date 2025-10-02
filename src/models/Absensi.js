@@ -1,5 +1,6 @@
 // models/Absensi.js (Updated)
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
 
 const absensiSchema = new mongoose.Schema(
   {
@@ -40,5 +41,8 @@ const absensiSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// 2. Tambahkan plugin ke skema
+absensiSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("Absensi", absensiSchema);

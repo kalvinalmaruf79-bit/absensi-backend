@@ -107,6 +107,8 @@ exports.getJadwalGuru = async (req, res) => {
 exports.getSiswaKelas = async (req, res) => {
   try {
     const { kelasId } = req.params;
+    const { page = 1, limit = 100, search } = req.query; // Limit tinggi karena biasanya untuk dropdown/list lengkap
+
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -118,14 +120,26 @@ exports.getSiswaKelas = async (req, res) => {
         .json({ message: "Anda tidak mengajar di kelas ini." });
     }
 
-    const siswa = await User.find({
+    let query = {
       kelas: kelasId,
       role: "siswa",
       isActive: true,
-    })
-      .select("-password")
-      .sort({ name: 1 });
-    res.json(siswa);
+    };
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [{ name: searchRegex }, { identifier: searchRegex }];
+    }
+
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      select: "-password",
+      sort: { name: 1 },
+    };
+
+    const result = await User.paginate(query, options);
+    res.json(result);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
@@ -476,7 +490,14 @@ exports.inputNilaiMassal = async (req, res) => {
 
 exports.getNilaiSiswa = async (req, res) => {
   try {
-    const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
+    const {
+      kelasId,
+      mataPelajaranId,
+      semester,
+      tahunAjaran,
+      page = 1,
+      limit = 10,
+    } = req.query;
 
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
@@ -490,17 +511,26 @@ exports.getNilaiSiswa = async (req, res) => {
       });
     }
 
-    const nilai = await Nilai.find({
+    const query = {
       guru: req.user.id,
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
       semester,
       tahunAjaran,
-    })
-      .populate("siswa", "name identifier")
-      .populate("mataPelajaran", "nama kode");
+    };
 
-    res.json(nilai);
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+      populate: [
+        { path: "siswa", select: "name identifier" },
+        { path: "mataPelajaran", select: "nama kode" },
+      ],
+    };
+
+    const result = await Nilai.paginate(query, options);
+    res.json(result);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }

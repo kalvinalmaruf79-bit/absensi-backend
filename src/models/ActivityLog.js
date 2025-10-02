@@ -1,5 +1,6 @@
 // src/models/ActivityLog.js
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
 
 const activityLogSchema = new mongoose.Schema(
   {
@@ -30,5 +31,8 @@ const activityLogSchema = new mongoose.Schema(
 // Membuat TTL index agar log lama otomatis terhapus setelah 1 tahun (31536000 detik)
 // Ini baik untuk menjaga ukuran database tetap optimal.
 activityLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 31536000 });
+
+// 2. Tambahkan plugin ke skema
+activityLogSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("ActivityLog", activityLogSchema);
