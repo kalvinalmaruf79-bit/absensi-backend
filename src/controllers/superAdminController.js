@@ -406,12 +406,18 @@ exports.importUsers = async (req, res) => {
 
     const kelasCache = new Map();
     const semuaKelas = await Kelas.find({}).select("nama _id");
-    semuaKelas.forEach((k) => kelasCache.set(k.nama.toLowerCase(), k._id));
+
+    // Fungsi untuk menormalkan string (menghapus spasi berlebih)
+    const normalizeString = (str) =>
+      str.toLowerCase().replace(/\s+/g, " ").trim();
+
+    semuaKelas.forEach((k) => {
+      kelasCache.set(normalizeString(k.nama), k._id);
+    });
 
     for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
       const row = worksheet.getRow(rowNumber);
 
-      // PERBAIKAN: Menggunakan .text untuk membaca nilai sel sebagai string
       const name = row.getCell(1).text.trim();
       const email = row.getCell(2).text.trim();
       const identifier = row.getCell(3).text.trim();
@@ -451,7 +457,8 @@ exports.importUsers = async (req, res) => {
           );
           continue;
         }
-        kelasId = kelasCache.get(kelasNama.toLowerCase());
+        // Mencari kelas menggunakan nama yang sudah dinormalkan
+        kelasId = kelasCache.get(normalizeString(kelasNama));
         if (!kelasId) {
           report.gagal++;
           report.errors.push(
