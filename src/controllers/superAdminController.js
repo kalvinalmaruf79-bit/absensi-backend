@@ -424,6 +424,12 @@ exports.importUsers = async (req, res) => {
       const role = row.getCell(4).text.trim().toLowerCase();
       const kelasNama = row.getCell(5).text.trim();
 
+      // Skip baris kosong
+      if (!name && !email && !identifier && !role) {
+        continue;
+      }
+
+      // Validasi data wajib
       if (!name || !email || !identifier || !role) {
         report.gagal++;
         report.errors.push(
@@ -431,6 +437,8 @@ exports.importUsers = async (req, res) => {
         );
         continue;
       }
+
+      // Validasi role
       if (!["siswa", "guru"].includes(role)) {
         report.gagal++;
         report.errors.push(
@@ -438,6 +446,8 @@ exports.importUsers = async (req, res) => {
         );
         continue;
       }
+
+      // Cek duplikasi dalam file
       if (identifiers.has(identifier) || emails.has(email)) {
         report.gagal++;
         report.errors.push(
@@ -449,7 +459,10 @@ exports.importUsers = async (req, res) => {
       emails.add(email);
 
       let kelasId = null;
+
+      // PERBAIKAN UTAMA: Hanya validasi kelas jika role adalah siswa
       if (role === "siswa") {
+        // Untuk siswa, kelas WAJIB diisi
         if (!kelasNama) {
           report.gagal++;
           report.errors.push(
@@ -457,6 +470,7 @@ exports.importUsers = async (req, res) => {
           );
           continue;
         }
+
         // Mencari kelas menggunakan nama yang sudah dinormalkan
         kelasId = kelasCache.get(normalizeString(kelasNama));
         if (!kelasId) {
@@ -467,6 +481,7 @@ exports.importUsers = async (req, res) => {
           continue;
         }
       }
+      // Untuk guru, kelasId tetap null (tidak perlu validasi kelas)
 
       const hashedPassword = await bcrypt.hash(identifier, 10);
 
@@ -480,7 +495,7 @@ exports.importUsers = async (req, res) => {
               identifier,
               password: hashedPassword,
               role,
-              kelas: role === "siswa" ? kelasId : undefined,
+              kelas: role === "siswa" ? kelasId : undefined, // Hanya set kelas jika siswa
               isPasswordDefault: true,
             },
           },
@@ -492,6 +507,33 @@ exports.importUsers = async (req, res) => {
     if (bulkOps.length > 0) {
       const result = await User.bulkWrite(bulkOps);
       report.berhasil = result.upsertedCount;
+
+      // Update array siswa di kelas untuk siswa yang baru diimport
+      if (result.upsertedIds) {
+        const siswaIds = Object.values(result.upsertedIds);
+        const siswaBaru = await User.find({
+          _id: { $in: siswaIds },
+          role: "siswa",
+        }).select("_id kelas");
+
+        // Group siswa by kelas
+        const siswaByKelas = {};
+        siswaBaru.forEach((siswa) => {
+          if (siswa.kelas) {
+            if (!siswaByKelas[siswa.kelas]) {
+              siswaByKelas[siswa.kelas] = [];
+            }
+            siswaByKelas[siswa.kelas].push(siswa._id);
+          }
+        });
+
+        // Update each kelas with its new students
+        for (const [kelasId, siswaIds] of Object.entries(siswaByKelas)) {
+          await Kelas.findByIdAndUpdate(kelasId, {
+            $addToSet: { siswa: { $each: siswaIds } },
+          });
+        }
+      }
     }
 
     res.status(200).json({
