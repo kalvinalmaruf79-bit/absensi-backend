@@ -30,6 +30,9 @@ const {
   getKelasById,
   updateKelas,
   deleteKelas,
+  forceDeleteKelas, // TAMBAHAN BARU
+  restoreKelas, // TAMBAHAN BARU
+  getKelasStats, // TAMBAHAN BARU
   createJadwal,
   getAllJadwal,
   updateJadwal,
@@ -83,11 +86,22 @@ router.put("/mata-pelajaran/:id", updateMataPelajaran);
 router.delete("/mata-pelajaran/:id", deleteMataPelajaran);
 
 // Kelas Management
-router.post("/kelas", createKelas);
+// Get all kelas (with optional includeInactive)
 router.get("/kelas", getAllKelas);
+// Get kelas stats (detail info sebelum delete) - HARUS DI ATAS :id route
+router.get("/kelas/:id/stats", getKelasStats);
+// Get kelas by id
 router.get("/kelas/:id", getKelasById);
+// Create kelas
+router.post("/kelas", createKelas);
+// Update kelas
 router.put("/kelas/:id", updateKelas);
+// Restore kelas (aktifkan kembali)
+router.put("/kelas/:id/restore", restoreKelas);
+// Soft delete kelas (nonaktifkan)
 router.delete("/kelas/:id", deleteKelas);
+// Force delete kelas (hapus permanen) - HARUS DI BAWAH route /kelas/:id
+router.delete("/kelas/:id/force", forceDeleteKelas);
 
 // Jadwal Management
 router.post("/jadwal", createJadwal);

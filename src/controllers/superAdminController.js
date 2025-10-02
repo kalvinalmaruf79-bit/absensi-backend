@@ -1,4 +1,3 @@
-// src/controllers/superAdminController.js
 const User = require("../models/User");
 const MataPelajaran = require("../models/MataPelajaran");
 const Kelas = require("../models/Kelas");
@@ -904,22 +903,31 @@ exports.unassignGuruMataPelajaran = async (req, res) => {
   }
 };
 
-// ============= KELAS MANAGEMENT =============
+// ============= KELAS MANAGEMENT (COMPLETE WITH MULTI-LEVEL DELETE) =============
+
+// FUNGSI YANG HILANG - DITAMBAHKAN
+/**
+ * Create a new Kelas
+ */
 exports.createKelas = async (req, res) => {
   try {
     const { nama, tingkat, jurusan, tahunAjaran, waliKelas } = req.body;
-    if (!nama || !tingkat || !jurusan || !tahunAjaran) {
+    if (!nama || !tingkat || !tahunAjaran) {
       return res.status(400).json({
-        message: "Nama, tingkat, jurusan, dan tahun ajaran wajib diisi.",
+        success: false,
+        message: "Nama, tingkat, dan tahun ajaran wajib diisi.",
       });
     }
-    const existing = await Kelas.findOne({ nama, tahunAjaran });
-    if (existing) {
+
+    const existingKelas = await Kelas.findOne({ nama, tahunAjaran });
+    if (existingKelas) {
       return res.status(400).json({
-        message: "Kelas dengan nama dan tahun ajaran tersebut sudah ada.",
+        success: false,
+        message: "Kelas dengan nama dan tahun ajaran yang sama sudah ada.",
       });
     }
-    const kelas = new Kelas({
+
+    const newKelas = new Kelas({
       nama,
       tingkat,
       jurusan,
@@ -927,72 +935,428 @@ exports.createKelas = async (req, res) => {
       waliKelas,
       createdBy: req.user.id,
     });
-    await kelas.save();
-    const kelasResponse = await Kelas.findById(kelas._id).populate(
+
+    await newKelas.save();
+    const populatedKelas = await Kelas.findById(newKelas._id).populate(
       "waliKelas",
       "name identifier"
     );
-    res
-      .status(201)
-      .json({ message: "Kelas berhasil dibuat.", kelas: kelasResponse });
+
+    res.status(201).json({
+      success: true,
+      message: "Kelas berhasil dibuat.",
+      data: populatedKelas,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error creating kelas:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
-exports.getAllKelas = async (req, res) => {
-  try {
-    const kelas = await Kelas.find({})
-      .populate("waliKelas", "name identifier")
-      .populate("siswa", "name identifier")
-      .populate("createdBy", "name")
-      .sort({ tingkat: 1, nama: 1 });
-    res.json(kelas);
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
+// FUNGSI YANG HILANG - DITAMBAHKAN
+/**
+ * Get Kelas by ID
+ */
 exports.getKelasById = async (req, res) => {
   try {
     const kelas = await Kelas.findById(req.params.id)
       .populate("waliKelas", "name identifier")
       .populate("siswa", "name identifier")
       .populate("createdBy", "name");
+
     if (!kelas) {
-      return res.status(404).json({ message: "Kelas tidak ditemukan." });
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
     }
-    res.json(kelas);
+    res.json({
+      success: true,
+      data: kelas,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error getting kelas by ID:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
+// FUNGSI YANG HILANG - DITAMBAHKAN
+/**
+ * Update Kelas
+ */
 exports.updateKelas = async (req, res) => {
   try {
-    const kelas = await Kelas.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-    });
-    if (!kelas) {
-      return res.status(404).json({ message: "Kelas tidak ditemukan." });
+    const { nama, tingkat, jurusan, tahunAjaran, waliKelas, isActive } =
+      req.body;
+    const updatedKelas = await Kelas.findByIdAndUpdate(
+      req.params.id,
+      { nama, tingkat, jurusan, tahunAjaran, waliKelas, isActive },
+      { new: true, runValidators: true }
+    ).populate("waliKelas", "name identifier");
+
+    if (!updatedKelas) {
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
     }
-    res.json({ message: "Kelas berhasil diupdate.", kelas });
+    res.json({
+      success: true,
+      message: "Kelas berhasil diperbarui.",
+      data: updatedKelas,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error updating kelas:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
+/**
+ * Get All Kelas - Filter berdasarkan status aktif
+ */
+exports.getAllKelas = async (req, res) => {
+  try {
+    const { includeInactive } = req.query;
+
+    // By default hanya tampilkan kelas aktif
+    const filter = includeInactive === "true" ? {} : { isActive: true };
+
+    const kelas = await Kelas.find(filter)
+      .populate("waliKelas", "name identifier")
+      .populate("siswa", "name identifier")
+      .populate("createdBy", "name")
+      .sort({ tingkat: 1, nama: 1 });
+
+    res.json({
+      success: true,
+      data: kelas,
+      count: kelas.length,
+    });
+  } catch (error) {
+    console.error("Error getting kelas:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Soft Delete Kelas - Nonaktifkan kelas (default behavior)
+ */
 exports.deleteKelas = async (req, res) => {
   try {
-    const kelas = await Kelas.findByIdAndUpdate(req.params.id, {
-      isActive: false,
-    });
+    const kelas = await Kelas.findById(req.params.id);
+
     if (!kelas) {
-      return res.status(404).json({ message: "Kelas tidak ditemukan." });
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
     }
-    res.json({ message: "Kelas berhasil dihapus." });
+
+    if (!kelas.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Kelas sudah nonaktif.",
+      });
+    }
+
+    // Cek apakah kelas masih memiliki siswa aktif
+    const jumlahSiswaAktif = await User.countDocuments({
+      kelas: req.params.id,
+      role: "siswa",
+      isActive: true,
+    });
+
+    if (jumlahSiswaAktif > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Tidak dapat menonaktifkan kelas. Masih ada ${jumlahSiswaAktif} siswa aktif. Pindahkan siswa terlebih dahulu atau gunakan force delete.`,
+        canForceDelete: true,
+        siswaCount: jumlahSiswaAktif,
+      });
+    }
+
+    // Soft delete
+    kelas.isActive = false;
+    await kelas.save();
+
+    // Nonaktifkan juga jadwal terkait
+    await Jadwal.updateMany({ kelas: req.params.id }, { isActive: false });
+
+    res.json({
+      success: true,
+      message:
+        "Kelas berhasil dinonaktifkan. Data masih dapat dipulihkan jika diperlukan.",
+    });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error soft deleting kelas:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Force Delete Kelas - Hapus permanen dengan validasi
+ * Query: ?force=true
+ */
+exports.forceDeleteKelas = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const kelasId = req.params.id;
+    const kelas = await Kelas.findById(kelasId).session(session);
+
+    if (!kelas) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
+    }
+
+    // Hitung semua relasi data
+    const [
+      jumlahSiswa,
+      jumlahJadwal,
+      jumlahNilai,
+      jumlahAbsensi,
+      jumlahTugas,
+      jumlahMateri,
+    ] = await Promise.all([
+      User.countDocuments({ kelas: kelasId }).session(session),
+      Jadwal.countDocuments({ kelas: kelasId }).session(session),
+      Nilai.countDocuments({ kelas: kelasId }).session(session),
+      Absensi.countDocuments({ kelas: kelasId }).session(session),
+      Tugas.countDocuments({ kelas: kelasId }).session(session),
+      Materi.countDocuments({ kelas: kelasId }).session(session),
+    ]);
+
+    const dataRelasi = {
+      siswa: jumlahSiswa,
+      jadwal: jumlahJadwal,
+      nilai: jumlahNilai,
+      absensi: jumlahAbsensi,
+      tugas: jumlahTugas,
+      materi: jumlahMateri,
+    };
+
+    const totalRelasi = Object.values(dataRelasi).reduce(
+      (sum, val) => sum + val,
+      0
+    );
+
+    // Jika ada data terkait, berikan warning dan opsi
+    if (totalRelasi > 0 && req.query.confirm !== "yes") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Kelas ini memiliki ${totalRelasi} data terkait yang akan terhapus permanen!`,
+        warning: "PERHATIAN: Penghapusan permanen tidak dapat dibatalkan!",
+        dataRelasi,
+        totalRelasi,
+        actions: {
+          // Jika mau tetap force delete, kirim confirmation
+          confirmDelete: {
+            method: "DELETE",
+            url: `/super-admin/kelas/${kelasId}/force?confirm=yes`,
+            warning: "Akan menghapus SEMUA data terkait secara permanen",
+          },
+          // Atau pindahkan siswa dulu
+          alternative:
+            "Pindahkan siswa ke kelas lain terlebih dahulu, lalu hapus kelas kosong",
+        },
+      });
+    }
+
+    // Jika tidak ada data terkait, langsung hapus
+    if (totalRelasi === 0 || req.query.confirm === "yes") {
+      // Hapus semua data terkait dulu
+      await Promise.all([
+        User.updateMany(
+          { kelas: kelasId },
+          { $set: { kelas: null } },
+          { session }
+        ),
+        Jadwal.deleteMany({ kelas: kelasId }, { session }),
+        Nilai.deleteMany({ kelas: kelasId }, { session }),
+        Absensi.deleteMany({ kelas: kelasId }, { session }),
+        Tugas.deleteMany({ kelas: kelasId }, { session }),
+        Materi.deleteMany({ kelas: kelasId }, { session }),
+      ]);
+
+      // Hapus kelas
+      await Kelas.findByIdAndDelete(kelasId).session(session);
+
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message: "Kelas dan semua data terkait berhasil dihapus permanen.",
+        deletedData: dataRelasi,
+      });
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error force deleting kelas:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * Restore Kelas - Aktifkan kembali kelas yang di-soft delete
+ */
+exports.restoreKelas = async (req, res) => {
+  try {
+    const kelas = await Kelas.findById(req.params.id);
+
+    if (!kelas) {
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
+    }
+
+    if (kelas.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Kelas sudah aktif.",
+      });
+    }
+
+    // Validasi: Cek apakah wali kelas masih aktif
+    if (kelas.waliKelas) {
+      const waliKelas = await User.findById(kelas.waliKelas);
+      if (!waliKelas || !waliKelas.isActive) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Tidak dapat mengaktifkan kelas. Wali kelas tidak aktif atau tidak ditemukan. Silakan update wali kelas terlebih dahulu.",
+        });
+      }
+    }
+
+    // Restore kelas
+    kelas.isActive = true;
+    await kelas.save();
+
+    // Aktifkan kembali jadwal terkait (opsional)
+    const jadwalUpdated = await Jadwal.updateMany(
+      { kelas: req.params.id },
+      { isActive: true }
+    );
+
+    res.json({
+      success: true,
+      message: "Kelas berhasil diaktifkan kembali.",
+      data: kelas,
+      jadwalRestored: jadwalUpdated.modifiedCount,
+    });
+  } catch (error) {
+    console.error("Error restoring kelas:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Get Kelas Stats - Info detail sebelum delete
+ */
+exports.getKelasStats = async (req, res) => {
+  try {
+    const kelasId = req.params.id;
+    const kelas = await Kelas.findById(kelasId)
+      .populate("waliKelas", "name identifier")
+      .populate("siswa", "name identifier");
+
+    if (!kelas) {
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
+    }
+
+    const [
+      jumlahJadwal,
+      jumlahNilai,
+      jumlahAbsensi,
+      jumlahTugas,
+      jumlahMateri,
+      siswaDenganNilai,
+    ] = await Promise.all([
+      Jadwal.countDocuments({ kelas: kelasId }),
+      Nilai.countDocuments({ kelas: kelasId }),
+      Absensi.countDocuments({ siswa: { $in: kelas.siswa.map((s) => s._id) } }),
+      Tugas.countDocuments({ kelas: kelasId }),
+      Materi.countDocuments({ kelas: kelasId }),
+      Nilai.distinct("siswa", { kelas: kelasId }),
+    ]);
+
+    res.json({
+      success: true,
+      kelas: {
+        _id: kelas._id,
+        nama: kelas.nama,
+        tingkat: kelas.tingkat,
+        jurusan: kelas.jurusan,
+        tahunAjaran: kelas.tahunAjaran,
+        isActive: kelas.isActive,
+        waliKelas: kelas.waliKelas,
+      },
+      stats: {
+        jumlahSiswa: kelas.siswa.length,
+        jumlahJadwal,
+        jumlahNilai,
+        jumlahAbsensi,
+        jumlahTugas,
+        jumlahMateri,
+        siswaDenganNilai: siswaDenganNilai.length,
+      },
+      siswa: kelas.siswa.map((s) => ({
+        _id: s._id,
+        name: s.name,
+        identifier: s.identifier,
+      })),
+      canSafeDelete: kelas.siswa.length === 0 && jumlahNilai === 0,
+      recommendation:
+        kelas.siswa.length === 0
+          ? "Aman untuk dihapus permanen"
+          : "Disarankan pindahkan siswa terlebih dahulu atau gunakan soft delete",
+    });
+  } catch (error) {
+    console.error("Error getting kelas stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
