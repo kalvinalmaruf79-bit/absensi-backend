@@ -397,9 +397,7 @@ exports.importUsers = async (req, res) => {
   };
 
   try {
-    // --- PERBAIKAN: Baca dari buffer memori, bukan dari file path ---
     await workbook.xlsx.load(req.file.buffer);
-    // ----------------------------------------------------------------
 
     const worksheet = workbook.getWorksheet(1);
     const bulkOps = [];
@@ -412,11 +410,13 @@ exports.importUsers = async (req, res) => {
 
     for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
       const row = worksheet.getRow(rowNumber);
-      const name = row.getCell(1).value?.toString().trim();
-      const email = row.getCell(2).value?.toString().trim();
-      const identifier = row.getCell(3).value?.toString().trim();
-      const role = row.getCell(4).value?.toString().trim().toLowerCase();
-      const kelasNama = row.getCell(5).value?.toString().trim();
+
+      // PERBAIKAN: Menggunakan .text untuk membaca nilai sel sebagai string
+      const name = row.getCell(1).text.trim();
+      const email = row.getCell(2).text.trim();
+      const identifier = row.getCell(3).text.trim();
+      const role = row.getCell(4).text.trim().toLowerCase();
+      const kelasNama = row.getCell(5).text.trim();
 
       if (!name || !email || !identifier || !role) {
         report.gagal++;
@@ -455,7 +455,7 @@ exports.importUsers = async (req, res) => {
         if (!kelasId) {
           report.gagal++;
           report.errors.push(
-            `Baris ${rowNumber}: Kelas '${kelasNama}' tidak ditemukan.`
+            `Baris ${rowNumber}: Kelas '${kelasNama}' tidak ditemukan di database. Pastikan nama kelas sesuai persis.`
           );
           continue;
         }
@@ -492,7 +492,6 @@ exports.importUsers = async (req, res) => {
       report,
     });
   } catch (error) {
-    // --- PERBAIKAN: Tidak perlu lagi menghapus file karena tidak ada di disk ---
     res.status(500).json({
       message: "Terjadi kesalahan saat memproses file Excel.",
       error: error.message,
