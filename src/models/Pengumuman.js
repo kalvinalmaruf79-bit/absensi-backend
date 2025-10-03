@@ -31,7 +31,6 @@ const pengumumanSchema = new mongoose.Schema(
     ],
     isPublished: {
       type: Boolean,
-      default: true,
     },
     publishedAt: {
       type: Date,
