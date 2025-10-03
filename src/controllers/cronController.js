@@ -4,6 +4,8 @@ const User = require("../models/User");
 const Absensi = require("../models/Absensi");
 const SesiPresensi = require("../models/SesiPresensi");
 const Notifikasi = require("../models/Notifikasi");
+const Nilai = require("../models/Nilai"); // <-- 1. Impor model Nilai
+const Tugas = require("../models/Tugas"); // <-- 2. Impor model Tugas
 const sendPushNotification = require("../utils/sendPushNotification");
 const mongoose = require("mongoose");
 
@@ -12,7 +14,8 @@ const sendBulkNotifications = async (
   users,
   notificationType,
   title,
-  message
+  message,
+  resourceId = null
 ) => {
   if (!users || users.length === 0) return;
 
@@ -25,6 +28,7 @@ const sendBulkNotifications = async (
     tipe: notificationType,
     judul: title,
     pesan: message,
+    ...(resourceId && { resourceId }),
   }));
 
   if (notifikasiDocs.length > 0) {
@@ -35,6 +39,7 @@ const sendBulkNotifications = async (
   if (playerIds.length > 0) {
     sendPushNotification(playerIds, title, message, {
       type: notificationType,
+      ...(resourceId && { resourceId: resourceId.toString() }),
     });
   }
 };
@@ -46,8 +51,8 @@ const sendBulkNotifications = async (
 exports.sendPresenceReminders = async (req, res) => {
   try {
     const now = new Date();
-    const reminderTimeStart = new Date(now.getTime() + 9 * 60 * 1000); // 9 menit dari sekarang
-    const reminderTimeEnd = new Date(now.getTime() + 11 * 60 * 1000); // 11 menit dari sekarang
+    const reminderTimeStart = new Date(now.getTime() + 9 * 60 * 1000);
+    const reminderTimeEnd = new Date(now.getTime() + 11 * 60 * 1000);
 
     const jamMulai = `${reminderTimeStart
       .getHours()
@@ -109,11 +114,9 @@ exports.sendPresenceReminders = async (req, res) => {
 exports.notifyLateStudents = async (req, res) => {
   try {
     const now = new Date();
-    // Cek sesi yang seharusnya sudah berakhir 15 menit yang lalu
     const targetTime = new Date(now.getTime() - 15 * 60 * 1000);
     const tanggalHariIni = now.toISOString().split("T")[0];
 
-    // 1. Cari sesi presensi yang dibuat hari ini dan sudah kedaluwarsa
     const expiredSessions = await SesiPresensi.find({
       tanggal: tanggalHariIni,
       expiredAt: { $lte: targetTime },
@@ -130,7 +133,6 @@ exports.notifyLateStudents = async (req, res) => {
 
     let totalNotified = 0;
     for (const sesi of expiredSessions) {
-      // 2. Dapatkan semua siswa di kelas tersebut
       const semuaSiswaDiKelas = await User.find({
         kelas: sesi.jadwal.kelas,
         role: "siswa",
@@ -138,13 +140,11 @@ exports.notifyLateStudents = async (req, res) => {
       }).select("_id deviceTokens");
       const semuaSiswaIds = semuaSiswaDiKelas.map((s) => s._id.toString());
 
-      // 3. Dapatkan siswa yang SUDAH absen di sesi ini
       const siswaSudahAbsen = await Absensi.find({
         sesiPresensi: sesi._id,
       }).select("siswa");
       const siswaSudahAbsenIds = siswaSudahAbsen.map((a) => a.siswa.toString());
 
-      // 4. Tentukan siswa yang BELUM absen
       const siswaBelumAbsen = semuaSiswaDiKelas.filter(
         (siswa) => !siswaSudahAbsenIds.includes(siswa._id.toString())
       );
@@ -165,6 +165,93 @@ exports.notifyLateStudents = async (req, res) => {
     });
   } catch (error) {
     console.error("Cron Job Error (notifyLateStudents):", error);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+// <-- 3. FUNGSI BARU UNTUK LAPORAN MINGGUAN
+/**
+ * @summary Mengirim laporan performa mingguan ke setiap siswa.
+ * @description Dijalankan setiap Sabtu malam oleh Vercel Cron Job.
+ */
+exports.sendWeeklyReports = async (req, res) => {
+  try {
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const activeStudents = await User.find({
+      role: "siswa",
+      isActive: true,
+      deviceTokens: { $exists: true, $ne: [] }, // Hanya siswa dengan device token
+    }).select("_id kelas deviceTokens");
+
+    if (activeStudents.length === 0) {
+      return res.json({
+        message: "Tidak ada siswa aktif untuk dikirimi laporan.",
+      });
+    }
+
+    let totalReportsSent = 0;
+    for (const siswa of activeStudents) {
+      const [absensiRekap, nilaiBaruCount, tugasMendatangCount] =
+        await Promise.all([
+          // Rekap absensi
+          Absensi.aggregate([
+            {
+              $match: {
+                siswa: siswa._id,
+                createdAt: { $gte: sevenDaysAgo, $lte: now },
+              },
+            },
+            { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+          ]),
+          // Jumlah nilai baru
+          Nilai.countDocuments({
+            siswa: siswa._id,
+            createdAt: { $gte: sevenDaysAgo, $lte: now },
+          }),
+          // Jumlah tugas mendatang
+          Tugas.countDocuments({
+            kelas: siswa.kelas,
+            deadline: { $gt: now },
+          }),
+        ]);
+
+      let rekapAbsensiString = "Kehadiran: ";
+      if (absensiRekap.length > 0) {
+        rekapAbsensiString += absensiRekap
+          .map((item) => `${item._id} (${item.count})`)
+          .join(", ");
+      } else {
+        rekapAbsensiString += "Tidak ada data.";
+      }
+
+      const message = `Aktivitasmu minggu ini: ${rekapAbsensiString}. Anda mendapatkan ${nilaiBaruCount} nilai baru dan ada ${tugasMendatangCount} tugas menanti. Tetap semangat!`;
+
+      // Kirim notifikasi ke satu siswa
+      sendPushNotification(
+        siswa.deviceTokens,
+        "Laporan Aktivitas Mingguan",
+        message,
+        { type: "laporan_mingguan" } // Data tambahan untuk navigasi
+      );
+
+      // Simpan juga di database notifikasi
+      await Notifikasi.create({
+        penerima: siswa._id,
+        tipe: "pengumuman_baru", // Bisa disesuaikan jika ingin tipe baru
+        judul: "Laporan Aktivitas Mingguan",
+        pesan: message,
+      });
+
+      totalReportsSent++;
+    }
+
+    res.json({
+      message: `Laporan mingguan berhasil dikirim ke ${totalReportsSent} siswa.`,
+    });
+  } catch (error) {
+    console.error("Cron Job Error (sendWeeklyReports):", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 };

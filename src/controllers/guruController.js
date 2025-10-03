@@ -6,6 +6,7 @@ const Absensi = require("../models/Absensi");
 const Nilai = require("../models/Nilai");
 const Kelas = require("../models/Kelas");
 const Pengumuman = require("../models/Pengumuman");
+const ActivityLog = require("../models/ActivityLog"); // <-- 1. Impor ActivityLog
 const ExcelJS = require("exceljs");
 
 // ============= DASHBOARD & PROFILE =============
@@ -29,7 +30,12 @@ exports.getDashboard = async (req, res) => {
       "sabtu",
     ][new Date().getDay()];
 
-    const [jadwalHariIni, jadwalGuru, pengumumanTerbaru] = await Promise.all([
+    const [
+      jadwalHariIni,
+      jadwalGuru,
+      pengumumanTerbaru,
+      rekapAbsensiBulanIni, // <-- 2. Tambahkan variabel untuk rekap absensi
+    ] = await Promise.all([
       Jadwal.find({
         guru: guru._id,
         hari: hariIni,
@@ -46,12 +52,36 @@ exports.getDashboard = async (req, res) => {
         .sort({ createdAt: -1 })
         .limit(5)
         .populate("pembuat", "name role"),
+      // <-- 3. Logika agregasi untuk rekap absensi bulan ini
+      Absensi.aggregate([
+        {
+          $match: {
+            jadwal: {
+              $in: await Jadwal.find({ guru: guru._id }).select("_id"),
+            },
+            createdAt: {
+              $gte: new Date(
+                new Date().getFullYear(),
+                new Date().getMonth(),
+                1
+              ),
+            },
+          },
+        },
+        { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+      ]),
     ]);
 
     const totalSiswa = await User.countDocuments({
       role: "siswa",
       kelas: { $in: jadwalGuru },
       isActive: true,
+    });
+
+    // <-- 4. Format data rekap absensi agar siap digunakan frontend
+    const statsAbsensi = {};
+    rekapAbsensiBulanIni.forEach((stat) => {
+      statsAbsensi[stat._id] = stat.count;
     });
 
     res.json({
@@ -66,10 +96,20 @@ exports.getDashboard = async (req, res) => {
         totalMataPelajaran: guru.mataPelajaran ? guru.mataPelajaran.length : 0,
         totalKelas: jadwalGuru.length,
         totalSiswa,
+        // <-- 5. Kirim data statistik absensi yang sudah diformat
+        absensiBulanIni: {
+          hadir: statsAbsensi.hadir || 0,
+          izin: statsAbsensi.izin || 0,
+          sakit: statsAbsensi.sakit || 0,
+          alpa: statsAbsensi.alpa || 0,
+        },
       },
     });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
@@ -107,7 +147,7 @@ exports.getJadwalGuru = async (req, res) => {
 exports.getSiswaKelas = async (req, res) => {
   try {
     const { kelasId } = req.params;
-    const { page = 1, limit = 100, search } = req.query; // Limit tinggi karena biasanya untuk dropdown/list lengkap
+    const { page = 1, limit = 100, search } = req.query;
 
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
@@ -735,6 +775,50 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
     console.error("Error getting analisis kinerja:", error);
     res.status(500).json({
       message: "Gagal mengambil data analisis kinerja.",
+      error: error.message,
+    });
+  }
+};
+
+// <-- 6. FUNGSI BARU UNTUK GURU MELIHAT HISTORI AKTIVITAS SISWA
+/**
+ * @summary Mengambil histori aktivitas siswa tertentu dengan pagination
+ */
+exports.getHistoriAktivitasSiswa = async (req, res) => {
+  try {
+    const { siswaId } = req.params;
+    const { page = 1, limit = 15 } = req.query;
+
+    // Validasi apakah guru berhak melihat data siswa ini (mengajar di kelas siswa tsb)
+    const siswa = await User.findById(siswaId);
+    if (!siswa || siswa.role !== "siswa") {
+      return res.status(404).json({ message: "Siswa tidak ditemukan." });
+    }
+
+    const isMengajar = await Jadwal.findOne({
+      guru: req.user.id,
+      kelas: siswa.kelas,
+      isActive: true,
+    });
+
+    if (!isMengajar && req.user.role !== "super_admin") {
+      return res
+        .status(403)
+        .json({ message: "Anda tidak memiliki akses ke histori siswa ini." });
+    }
+
+    const query = { user: siswaId };
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+    };
+
+    const histori = await ActivityLog.paginate(query, options);
+    res.json(histori);
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal mengambil histori aktivitas siswa.",
       error: error.message,
     });
   }

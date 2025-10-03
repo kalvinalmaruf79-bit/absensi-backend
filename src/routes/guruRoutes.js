@@ -13,7 +13,8 @@ const {
   exportNilai,
   getAnalisisKinerjaSiswa,
   getAbsensiBySesi,
-  getRekapNilaiKelas, // Tambahkan fungsi baru
+  getRekapNilaiKelas,
+  getHistoriAktivitasSiswa, // <-- 1. Impor fungsi baru
 } = require("../controllers/guruController");
 
 const {
@@ -37,9 +38,11 @@ router.get("/absensi/sesi", getAbsensiBySesi);
 
 // Siswa & Kelas Management
 router.get("/kelas/:kelasId/siswa", getSiswaKelas);
-// --- RUTE BARU UNTUK REKAP NILAI ---
 router.get("/kelas/:kelasId/rekap-nilai", getRekapNilaiKelas);
-// ------------------------------------
+
+// --- RUTE BARU UNTUK HISTORI AKTIVITAS SISWA ---
+router.get("/siswa/:siswaId/histori-aktivitas", getHistoriAktivitasSiswa);
+// ---------------------------------------------
 
 // Nilai Management
 router.post("/nilai", inputNilai);
