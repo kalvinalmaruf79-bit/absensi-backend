@@ -9,6 +9,9 @@ const {
   updateSettings, // Diubah
   createGuru, // Diubah
   createSiswa, // Diubah
+  getUserStats,
+  restoreUser,
+  forceDeleteUser,
   getAllUsers,
   getUserById,
   updateUser, // Diubah
@@ -72,6 +75,9 @@ router.post("/users/guru", ...createGuru);
 router.post("/users/siswa", ...createSiswa);
 router.post("/users/import", excelUploader.single("file"), ...importUsers);
 router.get("/users", getAllUsers);
+router.get("/users/:id/stats", getUserStats);
+router.put("/users/:id/restore", restoreUser);
+router.delete("/users/:id/force", forceDeleteUser);
 router.put("/users/:id/reset-password", ...resetPassword);
 router.get("/users/:id", getUserById);
 router.put("/users/:id", ...updateUser);

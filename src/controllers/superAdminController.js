@@ -263,9 +263,334 @@ exports.createGuru = [
   },
 ];
 
-// ... Sisa file superAdminController.js tetap sama ...
-// (Saya tidak akan menempelkan ulang sisa kodenya untuk keringkasan,
-// karena tidak ada perubahan di fungsi lainnya)
+// ============= USER MANAGEMENT (ADDITIONAL FEATURES) =============
+
+/**
+ * @summary Mendapatkan statistik user untuk menentukan keamanan penghapusan
+ */
+exports.getUserStats = async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const user = await User.findById(userId)
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User tidak ditemukan.",
+      });
+    }
+
+    let dataRelasi = {};
+    let totalRelasi = 0;
+
+    if (user.role === "guru") {
+      const [
+        jumlahJadwal,
+        jumlahMateri,
+        jumlahTugas,
+        jumlahNilai,
+        jumlahSesiPresensi,
+      ] = await Promise.all([
+        Jadwal.countDocuments({ guru: userId }),
+        Materi.countDocuments({ guru: userId }),
+        Tugas.countDocuments({ guru: userId }),
+        Nilai.countDocuments({ guru: userId }),
+        SesiPresensi.countDocuments({ dibuatOleh: userId }),
+      ]);
+
+      dataRelasi = {
+        mataPelajaran: user.mataPelajaran.length,
+        jadwal: jumlahJadwal,
+        materi: jumlahMateri,
+        tugas: jumlahTugas,
+        nilai: jumlahNilai,
+        sesiPresensi: jumlahSesiPresensi,
+      };
+    } else if (user.role === "siswa") {
+      const [jumlahNilai, jumlahAbsensi, jumlahTugas] = await Promise.all([
+        Nilai.countDocuments({ siswa: userId }),
+        Absensi.countDocuments({ siswa: userId }),
+        Tugas.countDocuments({ "submissions.siswa": userId }),
+      ]);
+
+      dataRelasi = {
+        kelas: user.kelas ? 1 : 0,
+        nilai: jumlahNilai,
+        absensi: jumlahAbsensi,
+        tugas: jumlahTugas,
+        riwayatKelas: user.riwayatKelas.length,
+      };
+    }
+
+    totalRelasi = Object.values(dataRelasi).reduce((sum, val) => sum + val, 0);
+
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        name: user.name,
+        identifier: user.identifier,
+        email: user.email,
+        role: user.role,
+        isActive: user.isActive,
+        kelas: user.kelas,
+        mataPelajaran: user.mataPelajaran,
+      },
+      stats: dataRelasi,
+      totalRelasi,
+      canSafeDelete: totalRelasi === 0,
+      recommendation:
+        totalRelasi === 0
+          ? "Aman untuk dihapus permanen"
+          : `User memiliki ${totalRelasi} data terkait. Disarankan menggunakan soft delete atau hapus data terkait terlebih dahulu`,
+    });
+  } catch (error) {
+    console.error("Error getting user stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * @summary Force delete user beserta semua data terkait
+ */
+exports.forceDeleteUser = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const userId = req.params.id;
+    const user = await User.findById(userId).session(session);
+
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "User tidak ditemukan.",
+      });
+    }
+
+    // Hitung data terkait
+    let dataRelasi = {};
+
+    if (user.role === "guru") {
+      const [
+        jumlahJadwal,
+        jumlahMateri,
+        jumlahTugas,
+        jumlahNilai,
+        jumlahSesiPresensi,
+      ] = await Promise.all([
+        Jadwal.countDocuments({ guru: userId }).session(session),
+        Materi.countDocuments({ guru: userId }).session(session),
+        Tugas.countDocuments({ guru: userId }).session(session),
+        Nilai.countDocuments({ guru: userId }).session(session),
+        SesiPresensi.countDocuments({ dibuatOleh: userId }).session(session),
+      ]);
+
+      dataRelasi = {
+        mataPelajaran: user.mataPelajaran.length,
+        jadwal: jumlahJadwal,
+        materi: jumlahMateri,
+        tugas: jumlahTugas,
+        nilai: jumlahNilai,
+        sesiPresensi: jumlahSesiPresensi,
+      };
+    } else if (user.role === "siswa") {
+      const [jumlahNilai, jumlahAbsensi, jumlahTugas] = await Promise.all([
+        Nilai.countDocuments({ siswa: userId }).session(session),
+        Absensi.countDocuments({ siswa: userId }).session(session),
+        Tugas.countDocuments({ "submissions.siswa": userId }).session(session),
+      ]);
+
+      dataRelasi = {
+        kelas: user.kelas ? 1 : 0,
+        nilai: jumlahNilai,
+        absensi: jumlahAbsensi,
+        tugas: jumlahTugas,
+        riwayatKelas: user.riwayatKelas.length,
+      };
+    }
+
+    const totalRelasi = Object.values(dataRelasi).reduce(
+      (sum, val) => sum + val,
+      0
+    );
+
+    // Konfirmasi diperlukan jika ada data terkait
+    if (totalRelasi > 0 && req.query.confirm !== "yes") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `User ini memiliki ${totalRelasi} data terkait yang akan terhapus permanen!`,
+        warning: "PERHATIAN: Penghapusan permanen tidak dapat dibatalkan!",
+        dataRelasi,
+        totalRelasi,
+        actions: {
+          confirmDelete: {
+            method: "DELETE",
+            url: `/super-admin/users/${userId}/force?confirm=yes`,
+            warning: "Akan menghapus SEMUA data terkait secara permanen",
+          },
+          alternative:
+            "Gunakan soft delete (deactivate) untuk tetap menyimpan data history",
+        },
+      });
+    }
+
+    // Proses penghapusan jika sudah konfirmasi atau tidak ada data terkait
+    if (totalRelasi === 0 || req.query.confirm === "yes") {
+      if (user.role === "guru") {
+        // Hapus relasi guru dari mata pelajaran
+        await MataPelajaran.updateMany(
+          { guru: userId },
+          { $pull: { guru: userId } },
+          { session }
+        );
+
+        // Hapus semua data yang dibuat guru
+        await Promise.all([
+          Jadwal.deleteMany({ guru: userId }, { session }),
+          Materi.deleteMany({ guru: userId }, { session }),
+          Tugas.deleteMany({ guru: userId }, { session }),
+          Nilai.deleteMany({ guru: userId }, { session }),
+          SesiPresensi.deleteMany({ dibuatOleh: userId }, { session }),
+        ]);
+      } else if (user.role === "siswa") {
+        // Hapus siswa dari kelas
+        if (user.kelas) {
+          await Kelas.findByIdAndUpdate(
+            user.kelas,
+            { $pull: { siswa: userId } },
+            { session }
+          );
+        }
+
+        // Hapus semua data siswa
+        await Promise.all([
+          Nilai.deleteMany({ siswa: userId }, { session }),
+          Absensi.deleteMany({ siswa: userId }, { session }),
+          Tugas.updateMany(
+            { "submissions.siswa": userId },
+            { $pull: { submissions: { siswa: userId } } },
+            { session }
+          ),
+        ]);
+      }
+
+      // Hapus activity logs terkait user
+      await ActivityLog.deleteMany({ user: userId }, { session });
+
+      // Hapus user
+      await User.findByIdAndDelete(userId).session(session);
+
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message: "User dan semua data terkait berhasil dihapus permanen.",
+        deletedData: dataRelasi,
+      });
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error force deleting user:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * @summary Restore (aktifkan kembali) user yang sudah di-soft delete
+ */
+exports.restoreUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User tidak ditemukan.",
+      });
+    }
+
+    if (user.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "User sudah aktif.",
+      });
+    }
+
+    // Validasi untuk siswa: pastikan kelas masih aktif
+    if (user.role === "siswa" && user.kelas) {
+      const kelas = await Kelas.findById(user.kelas);
+      if (!kelas || !kelas.isActive) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Tidak dapat mengaktifkan siswa. Kelas tidak ditemukan atau tidak aktif. Silakan update kelas terlebih dahulu.",
+        });
+      }
+
+      // Tambahkan kembali siswa ke array siswa di kelas
+      await Kelas.findByIdAndUpdate(user.kelas, {
+        $addToSet: { siswa: user._id },
+      });
+    }
+
+    // Validasi untuk guru: pastikan mata pelajaran yang diampu masih aktif
+    if (user.role === "guru" && user.mataPelajaran.length > 0) {
+      const activeMapel = await MataPelajaran.find({
+        _id: { $in: user.mataPelajaran },
+        isActive: true,
+      }).select("_id");
+
+      const activeMapelIds = activeMapel.map((m) => m._id.toString());
+      const inactiveMapel = user.mataPelajaran.filter(
+        (m) => !activeMapelIds.includes(m.toString())
+      );
+
+      if (inactiveMapel.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Tidak dapat mengaktifkan guru. ${inactiveMapel.length} mata pelajaran yang diampu tidak aktif. Silakan update penugasan mata pelajaran terlebih dahulu.`,
+          inactiveMapelCount: inactiveMapel.length,
+        });
+      }
+    }
+
+    user.isActive = true;
+    await user.save();
+
+    const restoredUser = await User.findById(user._id)
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode")
+      .select("-password");
+
+    res.json({
+      success: true,
+      message: "User berhasil diaktifkan kembali.",
+      data: restoredUser,
+    });
+  } catch (error) {
+    console.error("Error restoring user:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
 
 // ============= ACADEMIC CYCLE MANAGEMENT (BARU & DIPERBARUI) =============
 /**
