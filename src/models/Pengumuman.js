@@ -5,12 +5,13 @@ const pengumumanSchema = new mongoose.Schema(
   {
     judul: {
       type: String,
-      required: [true, "Judul pengumuman tidak boleh kosong"],
+      required: [true, "Judul pengumuman wajib diisi"],
       trim: true,
+      maxlength: [200, "Judul maksimal 200 karakter"],
     },
     isi: {
       type: String,
-      required: [true, "Isi pengumuman tidak boleh kosong"],
+      required: [true, "Isi pengumuman wajib diisi"],
     },
     pembuat: {
       type: mongoose.Schema.Types.ObjectId,
@@ -32,10 +33,26 @@ const pengumumanSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    publishedAt: {
+      type: Date,
+    },
   },
   {
     timestamps: true,
   }
 );
+
+// Index untuk performa query
+pengumumanSchema.index({ targetRole: 1, isPublished: 1, createdAt: -1 });
+pengumumanSchema.index({ targetKelas: 1, isPublished: 1 });
+pengumumanSchema.index({ pembuat: 1 });
+
+// Middleware untuk set publishedAt saat dipublish
+pengumumanSchema.pre("save", function (next) {
+  if (this.isPublished && !this.publishedAt) {
+    this.publishedAt = new Date();
+  }
+  next();
+});
 
 module.exports = mongoose.model("Pengumuman", pengumumanSchema);
