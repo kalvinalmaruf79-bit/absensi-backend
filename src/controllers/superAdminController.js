@@ -9,13 +9,177 @@ const Nilai = require("../models/Nilai");
 const Absensi = require("../models/Absensi");
 const SesiPresensi = require("../models/SesiPresensi");
 const AcademicRules = require("../models/AcademicRules");
+const ActivityLog = require("../models/ActivityLog");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
 const ExcelJS = require("exceljs");
 const fs = require("fs");
+const logActivity = require("../middleware/activityLogger");
+
+// ============= DASHBOARD (FUNGSI BARU YANG DIPERBARUI) =============
+/**
+ * @summary Get Dynamic Dashboard Statistics for Super Admin
+ */
+exports.getDashboard = async (req, res) => {
+  try {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const [
+      // 1. Statistik Utama
+      totalGuru,
+      totalSiswa,
+      totalMataPelajaran,
+      totalKelas,
+
+      // 2. Aktivitas Pengguna 7 Hari Terakhir
+      userActivity,
+
+      // 3. Distribusi Kelas per Tingkat
+      distribusiKelas,
+
+      // 4. Tren Absensi Mingguan
+      trenAbsensi,
+
+      // 5. Statistik Konten (Tugas & Materi)
+      kontenDibuat,
+
+      // 6. Rasio Kehadiran Siswa
+      rasioKehadiran,
+    ] = await Promise.all([
+      User.countDocuments({ role: "guru", isActive: true }),
+      User.countDocuments({ role: "siswa", isActive: true }),
+      MataPelajaran.countDocuments({ isActive: true }),
+      Kelas.countDocuments({ isActive: true }),
+
+      ActivityLog.aggregate([
+        { $match: { createdAt: { $gte: sevenDaysAgo } } },
+        {
+          $lookup: {
+            from: "users",
+            localField: "user",
+            foreignField: "_id",
+            as: "userInfo",
+          },
+        },
+        { $unwind: "$userInfo" },
+        {
+          $group: {
+            _id: {
+              date: {
+                $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+              },
+              role: "$userInfo.role",
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { "_id.date": 1 } },
+        {
+          $group: {
+            _id: "$_id.date",
+            activities: {
+              $push: {
+                role: "$_id.role",
+                count: "$count",
+              },
+            },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+
+      Kelas.aggregate([
+        { $match: { isActive: true } },
+        { $group: { _id: "$tingkat", count: { $sum: 1 } } },
+        { $project: { tingkat: "$_id", count: 1, _id: 0 } },
+        { $sort: { tingkat: 1 } },
+      ]),
+
+      Absensi.aggregate([
+        { $match: { createdAt: { $gte: sevenDaysAgo } } },
+        {
+          $group: {
+            _id: {
+              date: {
+                $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+              },
+              keterangan: "$keterangan",
+            },
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $group: {
+            _id: "$_id.date",
+            rekap: {
+              $push: {
+                k: "$_id.keterangan",
+                v: "$count",
+              },
+            },
+          },
+        },
+        {
+          $project: {
+            date: "$_id",
+            rekap: { $arrayToObject: "$rekap" },
+            _id: 0,
+          },
+        },
+        { $sort: { date: 1 } },
+      ]),
+
+      Promise.all([
+        Tugas.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
+        Materi.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
+      ]).then(([tugas, materi]) => ({ tugas, materi })),
+
+      Absensi.aggregate([
+        { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+        { $project: { status: "$_id", count: 1, _id: 0 } },
+      ]),
+    ]);
+
+    // Format data rasio kehadiran untuk chart (misal: pie chart)
+    const formatRasio = rasioKehadiran.reduce((acc, item) => {
+      acc[item.status] = item.count;
+      return acc;
+    }, {});
+
+    res.json({
+      message: "Dashboard Super Admin",
+      statistik: {
+        utama: {
+          totalGuru,
+          totalSiswa,
+          totalPengguna: totalGuru + totalSiswa + 1, // +1 untuk super admin
+          totalMataPelajaran,
+          totalKelas,
+        },
+        aktivitasPengguna: userActivity,
+        distribusiKelas,
+        trenAbsensi,
+        kontenDibuat,
+        rasioKehadiran: {
+          hadir: formatRasio.hadir || 0,
+          sakit: formatRasio.sakit || 0,
+          izin: formatRasio.izin || 0,
+          alpa: formatRasio.alpa || 0,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching dashboard data:", error);
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server saat memuat data dashboard.",
+      error: error.message,
+    });
+  }
+};
 
 // ============= ACADEMIC CYCLE MANAGEMENT (BARU & DIPERBARUI) =============
-
 /**
  * @summary Memberikan rekomendasi kenaikan kelas berdasarkan data akademik.
  */
@@ -132,92 +296,103 @@ exports.getPromotionRecommendation = async (req, res) => {
 /**
  * @summary Memproses kenaikan, kelulusan, dan tinggal kelas siswa.
  */
-exports.processPromotion = async (req, res) => {
-  const { siswaData, fromKelasId, defaultToKelasId, tahunAjaran, semester } =
-    req.body;
+exports.processPromotion = [
+  logActivity("PROCESS_PROMOTION", (req) => {
+    const { fromKelasId, tahunAjaran, siswaData } = req.body;
+    const naik = siswaData.filter((s) => s.status === "Naik Kelas").length;
+    const tinggal = siswaData.filter(
+      (s) => s.status === "Tinggal Kelas"
+    ).length;
+    const lulus = siswaData.filter((s) => s.status === "Lulus").length;
+    return `Memproses kenaikan kelas dari kelas ID ${fromKelasId} untuk T.A ${tahunAjaran}. Rincian: ${naik} naik, ${tinggal} tinggal, ${lulus} lulus.`;
+  }),
+  async (req, res) => {
+    const { siswaData, fromKelasId, defaultToKelasId, tahunAjaran, semester } =
+      req.body;
 
-  if (!siswaData || !fromKelasId || !tahunAjaran || !semester) {
-    return res.status(400).json({
-      message:
-        "Data siswa, kelas asal, tahun ajaran, dan semester wajib diisi.",
-    });
-  }
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const fromKelas = await Kelas.findById(fromKelasId).session(session);
-    if (!fromKelas) {
-      throw new Error("Kelas asal tidak ditemukan.");
+    if (!siswaData || !fromKelasId || !tahunAjaran || !semester) {
+      return res.status(400).json({
+        message:
+          "Data siswa, kelas asal, tahun ajaran, dan semester wajib diisi.",
+      });
     }
 
-    for (const data of siswaData) {
-      const { siswaId, status, toKelasId } = data; // toKelasId bersifat opsional per siswa
-      const siswa = await User.findById(siswaId).session(session);
-      if (!siswa) {
-        console.warn(`Siswa dengan ID ${siswaId} tidak ditemukan.`);
-        continue;
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const fromKelas = await Kelas.findById(fromKelasId).session(session);
+      if (!fromKelas) {
+        throw new Error("Kelas asal tidak ditemukan.");
       }
 
-      // Catat riwayat kelas sebelum pindah
-      const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
-        (riwayat) =>
-          riwayat.kelas.equals(fromKelasId) &&
-          riwayat.tahunAjaran === tahunAjaran
-      );
-      if (!sudahAdaDiRiwayat) {
-        siswa.riwayatKelas.push({
-          kelas: fromKelasId,
-          tahunAjaran: tahunAjaran,
-          semester: semester,
-        });
-      }
-
-      if (status === "Naik Kelas") {
-        const targetKelasId = toKelasId || defaultToKelasId; // Prioritaskan ID individu
-        if (!targetKelasId) {
-          throw new Error(
-            `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
-          );
+      for (const data of siswaData) {
+        const { siswaId, status, toKelasId } = data; // toKelasId bersifat opsional per siswa
+        const siswa = await User.findById(siswaId).session(session);
+        if (!siswa) {
+          console.warn(`Siswa dengan ID ${siswaId} tidak ditemukan.`);
+          continue;
         }
-        siswa.kelas = targetKelasId;
-        await Kelas.findByIdAndUpdate(
-          targetKelasId,
-          { $addToSet: { siswa: siswaId } },
-          { session }
+
+        // Catat riwayat kelas sebelum pindah
+        const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
+          (riwayat) =>
+            riwayat.kelas.equals(fromKelasId) &&
+            riwayat.tahunAjaran === tahunAjaran
         );
-      } else if (status === "Lulus") {
-        siswa.kelas = null;
-        siswa.isActive = false; // Nonaktifkan siswa yang lulus
+        if (!sudahAdaDiRiwayat) {
+          siswa.riwayatKelas.push({
+            kelas: fromKelasId,
+            tahunAjaran: tahunAjaran,
+            semester: semester,
+          });
+        }
+
+        if (status === "Naik Kelas") {
+          const targetKelasId = toKelasId || defaultToKelasId; // Prioritaskan ID individu
+          if (!targetKelasId) {
+            throw new Error(
+              `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
+            );
+          }
+          siswa.kelas = targetKelasId;
+          await Kelas.findByIdAndUpdate(
+            targetKelasId,
+            { $addToSet: { siswa: siswaId } },
+            { session }
+          );
+        } else if (status === "Lulus") {
+          siswa.kelas = null;
+          siswa.isActive = false; // Nonaktifkan siswa yang lulus
+        }
+        // Untuk "Tinggal Kelas", tidak ada perubahan pada field 'kelas' siswa
+        await siswa.save({ session });
       }
-      // Untuk "Tinggal Kelas", tidak ada perubahan pada field 'kelas' siswa
-      await siswa.save({ session });
+
+      // Update daftar siswa di kelas lama
+      const siswaYangPindahAtauLulus = siswaData
+        .filter((s) => s.status === "Naik Kelas" || s.status === "Lulus")
+        .map((s) => s.siswaId);
+
+      await Kelas.findByIdAndUpdate(
+        fromKelasId,
+        { $pull: { siswa: { $in: siswaYangPindahAtauLulus } } },
+        { session }
+      );
+
+      await session.commitTransaction();
+      res.json({ message: "Proses kenaikan kelas berhasil diselesaikan." });
+    } catch (error) {
+      await session.abortTransaction();
+      res.status(500).json({
+        message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
+        error: error.message,
+      });
+    } finally {
+      session.endSession();
     }
-
-    // Update daftar siswa di kelas lama
-    const siswaYangPindahAtauLulus = siswaData
-      .filter((s) => s.status === "Naik Kelas" || s.status === "Lulus")
-      .map((s) => s.siswaId);
-
-    await Kelas.findByIdAndUpdate(
-      fromKelasId,
-      { $pull: { siswa: { $in: siswaYangPindahAtauLulus } } },
-      { session }
-    );
-
-    await session.commitTransaction();
-    res.json({ message: "Proses kenaikan kelas berhasil diselesaikan." });
-  } catch (error) {
-    await session.abortTransaction();
-    res.status(500).json({
-      message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
-      error: error.message,
-    });
-  } finally {
-    session.endSession();
-  }
-};
+  },
+];
 
 // ============= PENGATURAN APLIKASI =============
 exports.getSettings = async (req, res) => {
@@ -229,19 +404,26 @@ exports.getSettings = async (req, res) => {
   }
 };
 
-exports.updateSettings = async (req, res) => {
-  try {
-    const { namaSekolah, semesterAktif, tahunAjaranAktif } = req.body;
-    const settings = await Settings.findOneAndUpdate(
-      { key: "global-settings" },
-      { $set: { namaSekolah, semesterAktif, tahunAjaranAktif } },
-      { new: true, upsert: true }
-    );
-    res.json({ message: "Pengaturan berhasil diperbarui.", settings });
-  } catch (error) {
-    res.status(500).json({ message: "Gagal memperbarui pengaturan." });
-  }
-};
+exports.updateSettings = [
+  logActivity(
+    "UPDATE_SETTINGS",
+    (req) =>
+      `Memperbarui pengaturan aplikasi. T.A: ${req.body.tahunAjaranAktif}, Semester: ${req.body.semesterAktif}.`
+  ),
+  async (req, res) => {
+    try {
+      const { namaSekolah, semesterAktif, tahunAjaranAktif } = req.body;
+      const settings = await Settings.findOneAndUpdate(
+        { key: "global-settings" },
+        { $set: { namaSekolah, semesterAktif, tahunAjaranAktif } },
+        { new: true, upsert: true }
+      );
+      res.json({ message: "Pengaturan berhasil diperbarui.", settings });
+    } catch (error) {
+      res.status(500).json({ message: "Gagal memperbarui pengaturan." });
+    }
+  },
+];
 
 // ============= LAPORAN (BARU) =============
 exports.getActivityReport = async (req, res) => {
@@ -355,425 +537,388 @@ exports.getActivityReport = async (req, res) => {
   }
 };
 
-// ============= DASHBOARD =============
-exports.getDashboard = async (req, res) => {
-  try {
-    const [totalGuru, totalSiswa, totalMataPelajaran, totalKelas, totalJadwal] =
-      await Promise.all([
-        User.countDocuments({ role: "guru", isActive: true }),
-        User.countDocuments({ role: "siswa", isActive: true }),
-        MataPelajaran.countDocuments({ isActive: true }),
-        Kelas.countDocuments({ isActive: true }),
-        Jadwal.countDocuments({ isActive: true }),
-      ]);
-
-    res.json({
-      message: "Dashboard Super Admin",
-      data: {
-        totalGuru,
-        totalSiswa,
-        totalPengguna: totalGuru + totalSiswa + 1,
-        totalMataPelajaran,
-        totalKelas,
-        totalJadwal,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
 // ============= USER MANAGEMENT (DIPERBARUI) =============
-// Di superAdminController.js
-exports.importUsers = async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ message: "File Excel tidak ditemukan." });
-  }
-
-  const workbook = new ExcelJS.Workbook();
-  const report = {
-    berhasil: 0,
-    gagal: 0,
-    errors: [],
-    warnings: [],
-  };
-
-  try {
-    await workbook.xlsx.load(req.file.buffer);
-
-    const worksheet = workbook.getWorksheet(1);
-    const bulkOps = [];
-    const identifiers = new Set();
-    const emails = new Set();
-
-    // Ambil tahun ajaran aktif dari settings sebagai fallback
-    const settings = await Settings.getSettings();
-    const tahunAjaranAktif = settings.tahunAjaranAktif;
-
-    // Cache semua kelas dengan kombinasi nama + tahun ajaran
-    const kelasCache = new Map();
-    const semuaKelas = await Kelas.find({ isActive: true }).select(
-      "nama tahunAjaran tingkat jurusan _id"
-    );
-
-    // Fungsi untuk menormalkan string
-    const normalizeString = (str) =>
-      str.toLowerCase().replace(/\s+/g, " ").trim();
-
-    // Build cache dengan key: "nama|tahunAjaran"
-    semuaKelas.forEach((k) => {
-      const key = `${normalizeString(k.nama)}|${k.tahunAjaran}`;
-      kelasCache.set(key, {
-        id: k._id,
-        nama: k.nama,
-        tahunAjaran: k.tahunAjaran,
-        tingkat: k.tingkat,
-        jurusan: k.jurusan,
-      });
-    });
-
-    // Validasi header Excel
-    const headerRow = worksheet.getRow(1);
-    const expectedHeaders = [
-      "nama",
-      "email",
-      "identifier",
-      "role",
-      "kelas",
-      "tahunajaran",
-    ];
-    const actualHeaders = [];
-    for (let i = 1; i <= 6; i++) {
-      actualHeaders.push(normalizeString(headerRow.getCell(i).text));
+exports.importUsers = [
+  logActivity(
+    "IMPORT_USERS",
+    (req) => `Mengimpor pengguna dari file Excel: ${req.file.originalname}.`
+  ),
+  async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ message: "File Excel tidak ditemukan." });
     }
 
-    const hasValidHeaders = expectedHeaders.every((h) =>
-      actualHeaders.includes(h)
-    );
-    if (!hasValidHeaders) {
-      return res.status(400).json({
-        message: "Format header Excel tidak valid.",
-        expected: [
-          "nama",
-          "email",
-          "identifier",
-          "role",
-          "kelas",
-          "tahunAjaran",
-        ],
-        received: actualHeaders,
+    const workbook = new ExcelJS.Workbook();
+    const report = {
+      berhasil: 0,
+      gagal: 0,
+      errors: [],
+      warnings: [],
+    };
+
+    try {
+      await workbook.xlsx.load(req.file.buffer);
+
+      const worksheet = workbook.getWorksheet(1);
+      const bulkOps = [];
+      const identifiers = new Set();
+      const emails = new Set();
+
+      const settings = await Settings.getSettings();
+      const tahunAjaranAktif = settings.tahunAjaranAktif;
+
+      const kelasCache = new Map();
+      const semuaKelas = await Kelas.find({ isActive: true }).select(
+        "nama tahunAjaran tingkat jurusan _id"
+      );
+
+      const normalizeString = (str) =>
+        str.toLowerCase().replace(/\s+/g, " ").trim();
+
+      semuaKelas.forEach((k) => {
+        const key = `${normalizeString(k.nama)}|${k.tahunAjaran}`;
+        kelasCache.set(key, {
+          id: k._id,
+          nama: k.nama,
+          tahunAjaran: k.tahunAjaran,
+          tingkat: k.tingkat,
+          jurusan: k.jurusan,
+        });
       });
-    }
 
-    // Process setiap baris
-    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
-      const row = worksheet.getRow(rowNumber);
-
-      const name = row.getCell(1).text.trim();
-      const email = row.getCell(2).text.trim();
-      const identifier = row.getCell(3).text.trim();
-      const role = row.getCell(4).text.trim().toLowerCase();
-      const kelasNama = row.getCell(5).text.trim();
-      let tahunAjaran = row.getCell(6).text.trim();
-      const isTahunAjaranKosong = !tahunAjaran; // Track apakah tahun ajaran kosong dari awal
-
-      // Skip baris kosong
-      if (!name && !email && !identifier && !role) {
-        continue;
+      const headerRow = worksheet.getRow(1);
+      const expectedHeaders = [
+        "nama",
+        "email",
+        "identifier",
+        "role",
+        "kelas",
+        "tahunajaran",
+      ];
+      const actualHeaders = [];
+      for (let i = 1; i <= 6; i++) {
+        actualHeaders.push(normalizeString(headerRow.getCell(i).text));
       }
 
-      // Validasi data wajib
-      if (!name || !email || !identifier || !role) {
-        report.gagal++;
-        report.errors.push({
-          row: rowNumber,
-          message:
-            "Data tidak lengkap (nama, email, identifier, role wajib diisi).",
-          data: { name, email, identifier, role },
+      const hasValidHeaders = expectedHeaders.every((h) =>
+        actualHeaders.includes(h)
+      );
+      if (!hasValidHeaders) {
+        return res.status(400).json({
+          message: "Format header Excel tidak valid.",
+          expected: [
+            "nama",
+            "email",
+            "identifier",
+            "role",
+            "kelas",
+            "tahunAjaran",
+          ],
+          received: actualHeaders,
         });
-        continue;
       }
 
-      // Validasi role
-      if (!["siswa", "guru"].includes(role)) {
-        report.gagal++;
-        report.errors.push({
-          row: rowNumber,
-          message: "Role tidak valid, harus 'siswa' atau 'guru'.",
-          data: { role },
-        });
-        continue;
-      }
+      for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+        const row = worksheet.getRow(rowNumber);
 
-      // Validasi format email
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email)) {
-        report.gagal++;
-        report.errors.push({
-          row: rowNumber,
-          message: "Format email tidak valid.",
-          data: { email },
-        });
-        continue;
-      }
+        const name = row.getCell(1).text.trim();
+        const email = row.getCell(2).text.trim();
+        const identifier = row.getCell(3).text.trim();
+        const role = row.getCell(4).text.trim().toLowerCase();
+        const kelasNama = row.getCell(5).text.trim();
+        let tahunAjaran = row.getCell(6).text.trim();
+        const isTahunAjaranKosong = !tahunAjaran;
 
-      // Cek duplikasi dalam file
-      if (identifiers.has(identifier)) {
-        report.gagal++;
-        report.errors.push({
-          row: rowNumber,
-          message: "Identifier duplikat di dalam file.",
-          data: { identifier },
-        });
-        continue;
-      }
-      if (emails.has(email)) {
-        report.gagal++;
-        report.errors.push({
-          row: rowNumber,
-          message: "Email duplikat di dalam file.",
-          data: { email },
-        });
-        continue;
-      }
-
-      identifiers.add(identifier);
-      emails.add(email);
-
-      let kelasId = null;
-
-      // VALIDASI KHUSUS UNTUK SISWA
-      if (role === "siswa") {
-        // Kelas wajib untuk siswa
-        if (!kelasNama) {
-          report.gagal++;
-          report.errors.push({
-            row: rowNumber,
-            message: "Nama kelas wajib diisi untuk siswa.",
-            data: { name, identifier },
-          });
+        if (!name && !email && !identifier && !role) {
           continue;
         }
 
-        // Jika tahun ajaran tidak diisi, gunakan tahun ajaran aktif
-        if (!tahunAjaran) {
-          tahunAjaran = tahunAjaranAktif;
-          report.warnings.push({
-            row: rowNumber,
-            message: `Tahun ajaran tidak diisi, menggunakan tahun ajaran aktif: ${tahunAjaranAktif}`,
-            data: { name, identifier },
-          });
-        }
-
-        // Validasi format tahun ajaran (YYYY/YYYY)
-        const tahunAjaranRegex = /^\d{4}\/\d{4}$/;
-        if (!tahunAjaranRegex.test(tahunAjaran)) {
+        if (!name || !email || !identifier || !role) {
           report.gagal++;
           report.errors.push({
             row: rowNumber,
             message:
-              "Format tahun ajaran tidak valid. Gunakan format YYYY/YYYY (contoh: 2025/2026)",
-            data: { tahunAjaran },
+              "Data tidak lengkap (nama, email, identifier, role wajib diisi).",
+            data: { name, email, identifier, role },
           });
           continue;
         }
 
-        // Cari kelas dengan kombinasi nama + tahun ajaran
-        const kelasKey = `${normalizeString(kelasNama)}|${tahunAjaran}`;
-        const kelasData = kelasCache.get(kelasKey);
-
-        if (!kelasData) {
-          // Cari apakah kelas dengan nama tersebut ada di tahun ajaran lain
-          const alternativeKelas = semuaKelas.filter(
-            (k) => normalizeString(k.nama) === normalizeString(kelasNama)
-          );
-
-          let errorMessage = `Kelas '${kelasNama}' untuk tahun ajaran '${tahunAjaran}' tidak ditemukan`;
-
-          // PERBAIKAN: Informasikan jika menggunakan TA aktif
-          if (isTahunAjaranKosong) {
-            errorMessage += ` (menggunakan tahun ajaran aktif)`;
-          }
-          errorMessage += `.`;
-
-          if (alternativeKelas.length > 0) {
-            const availableYears = alternativeKelas
-              .map((k) => k.tahunAjaran)
-              .join(", ");
-            errorMessage += ` Kelas '${kelasNama}' tersedia untuk tahun ajaran: ${availableYears}`;
-          }
-
+        if (!["siswa", "guru"].includes(role)) {
           report.gagal++;
           report.errors.push({
             row: rowNumber,
-            message: errorMessage,
-            data: { kelasNama, tahunAjaran },
+            message: "Role tidak valid, harus 'siswa' atau 'guru'.",
+            data: { role },
           });
           continue;
         }
 
-        kelasId = kelasData.id;
-      }
-      // Untuk guru, kelasId tetap null dan tahunAjaran diabaikan
-
-      const hashedPassword = await bcrypt.hash(identifier, 10);
-
-      bulkOps.push({
-        updateOne: {
-          filter: { $or: [{ email }, { identifier }] },
-          update: {
-            $setOnInsert: {
-              name,
-              email,
-              identifier,
-              password: hashedPassword,
-              role,
-              kelas: role === "siswa" ? kelasId : undefined,
-              isPasswordDefault: true,
-            },
-          },
-          upsert: true,
-        },
-      });
-    }
-
-    // Eksekusi bulk operations jika ada data valid
-    if (bulkOps.length > 0) {
-      const result = await User.bulkWrite(bulkOps);
-      report.berhasil = result.upsertedCount;
-
-      // Update array siswa di kelas untuk siswa yang baru diimport
-      if (result.upsertedIds && Object.keys(result.upsertedIds).length > 0) {
-        const siswaIds = Object.values(result.upsertedIds);
-        const siswaBaru = await User.find({
-          _id: { $in: siswaIds },
-          role: "siswa",
-        }).select("_id kelas");
-
-        // Group siswa by kelas
-        const siswaByKelas = {};
-        siswaBaru.forEach((siswa) => {
-          if (siswa.kelas) {
-            if (!siswaByKelas[siswa.kelas]) {
-              siswaByKelas[siswa.kelas] = [];
-            }
-            siswaByKelas[siswa.kelas].push(siswa._id);
-          }
-        });
-
-        // Update each kelas with its new students
-        for (const [kelasId, siswaIds] of Object.entries(siswaByKelas)) {
-          await Kelas.findByIdAndUpdate(kelasId, {
-            $addToSet: { siswa: { $each: siswaIds } },
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          report.gagal++;
+          report.errors.push({
+            row: rowNumber,
+            message: "Format email tidak valid.",
+            data: { email },
           });
+          continue;
+        }
+
+        if (identifiers.has(identifier)) {
+          report.gagal++;
+          report.errors.push({
+            row: rowNumber,
+            message: "Identifier duplikat di dalam file.",
+            data: { identifier },
+          });
+          continue;
+        }
+        if (emails.has(email)) {
+          report.gagal++;
+          report.errors.push({
+            row: rowNumber,
+            message: "Email duplikat di dalam file.",
+            data: { email },
+          });
+          continue;
+        }
+
+        identifiers.add(identifier);
+        emails.add(email);
+
+        let kelasId = null;
+
+        if (role === "siswa") {
+          if (!kelasNama) {
+            report.gagal++;
+            report.errors.push({
+              row: rowNumber,
+              message: "Nama kelas wajib diisi untuk siswa.",
+              data: { name, identifier },
+            });
+            continue;
+          }
+
+          if (!tahunAjaran) {
+            tahunAjaran = tahunAjaranAktif;
+            report.warnings.push({
+              row: rowNumber,
+              message: `Tahun ajaran tidak diisi, menggunakan tahun ajaran aktif: ${tahunAjaranAktif}`,
+              data: { name, identifier },
+            });
+          }
+
+          const tahunAjaranRegex = /^\d{4}\/\d{4}$/;
+          if (!tahunAjaranRegex.test(tahunAjaran)) {
+            report.gagal++;
+            report.errors.push({
+              row: rowNumber,
+              message:
+                "Format tahun ajaran tidak valid. Gunakan format YYYY/YYYY (contoh: 2025/2026)",
+              data: { tahunAjaran },
+            });
+            continue;
+          }
+
+          const kelasKey = `${normalizeString(kelasNama)}|${tahunAjaran}`;
+          const kelasData = kelasCache.get(kelasKey);
+
+          if (!kelasData) {
+            const alternativeKelas = semuaKelas.filter(
+              (k) => normalizeString(k.nama) === normalizeString(kelasNama)
+            );
+
+            let errorMessage = `Kelas '${kelasNama}' untuk tahun ajaran '${tahunAjaran}' tidak ditemukan`;
+            if (isTahunAjaranKosong) {
+              errorMessage += ` (menggunakan tahun ajaran aktif)`;
+            }
+            errorMessage += `.`;
+
+            if (alternativeKelas.length > 0) {
+              const availableYears = alternativeKelas
+                .map((k) => k.tahunAjaran)
+                .join(", ");
+              errorMessage += ` Kelas '${kelasNama}' tersedia untuk tahun ajaran: ${availableYears}`;
+            }
+
+            report.gagal++;
+            report.errors.push({
+              row: rowNumber,
+              message: errorMessage,
+              data: { kelasNama, tahunAjaran },
+            });
+            continue;
+          }
+
+          kelasId = kelasData.id;
+        }
+
+        const hashedPassword = await bcrypt.hash(identifier, 10);
+
+        bulkOps.push({
+          updateOne: {
+            filter: { $or: [{ email }, { identifier }] },
+            update: {
+              $setOnInsert: {
+                name,
+                email,
+                identifier,
+                password: hashedPassword,
+                role,
+                kelas: role === "siswa" ? kelasId : undefined,
+                isPasswordDefault: true,
+              },
+            },
+            upsert: true,
+          },
+        });
+      }
+
+      if (bulkOps.length > 0) {
+        const result = await User.bulkWrite(bulkOps);
+        report.berhasil = result.upsertedCount;
+
+        if (result.upsertedIds && Object.keys(result.upsertedIds).length > 0) {
+          const siswaIds = Object.values(result.upsertedIds);
+          const siswaBaru = await User.find({
+            _id: { $in: siswaIds },
+            role: "siswa",
+          }).select("_id kelas");
+
+          const siswaByKelas = {};
+          siswaBaru.forEach((siswa) => {
+            if (siswa.kelas) {
+              if (!siswaByKelas[siswa.kelas]) {
+                siswaByKelas[siswa.kelas] = [];
+              }
+              siswaByKelas[siswa.kelas].push(siswa._id);
+            }
+          });
+
+          for (const [kelasId, siswaIds] of Object.entries(siswaByKelas)) {
+            await Kelas.findByIdAndUpdate(kelasId, {
+              $addToSet: { siswa: { $each: siswaIds } },
+            });
+          }
         }
       }
+
+      res.status(200).json({
+        message: "Proses impor selesai.",
+        report,
+      });
+    } catch (error) {
+      console.error("Error importing users:", error);
+      res.status(500).json({
+        message: "Terjadi kesalahan saat memproses file Excel.",
+        error: error.message,
+      });
     }
+  },
+];
 
-    res.status(200).json({
-      message: "Proses impor selesai.",
-      report,
-    });
-  } catch (error) {
-    console.error("Error importing users:", error);
-    res.status(500).json({
-      message: "Terjadi kesalahan saat memproses file Excel.",
-      error: error.message,
-    });
-  }
-};
+exports.createSiswa = [
+  logActivity(
+    "CREATE_SISWA",
+    (req) =>
+      `Membuat pengguna siswa baru: ${req.body.name} (${req.body.identifier}).`
+  ),
+  async (req, res) => {
+    try {
+      const { name, email, identifier, kelas, password } = req.body;
 
-exports.createSiswa = async (req, res) => {
-  try {
-    const { name, email, identifier, kelas, password } = req.body;
+      if (!name || !email || !identifier || !kelas || !password) {
+        return res.status(400).json({ message: "Semua field wajib diisi." });
+      }
 
-    if (!name || !email || !identifier || !kelas || !password) {
-      return res.status(400).json({ message: "Semua field wajib diisi." });
+      const existing = await User.findOne({ $or: [{ email }, { identifier }] });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Email atau NIS sudah digunakan." });
+      }
+
+      const kelasData = await Kelas.findById(kelas);
+      if (!kelasData) {
+        return res.status(400).json({ message: "Kelas tidak ditemukan." });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const newSiswa = new User({
+        name,
+        email,
+        identifier,
+        password: hashedPassword,
+        kelas,
+        role: "siswa",
+        isPasswordDefault: false,
+      });
+      await newSiswa.save();
+
+      await Kelas.findByIdAndUpdate(kelas, {
+        $addToSet: { siswa: newSiswa._id },
+      });
+
+      const siswaResponse = await User.findById(newSiswa._id)
+        .populate("kelas", "nama tingkat jurusan")
+        .select("-password");
+
+      res
+        .status(201)
+        .json({ message: "Siswa berhasil dibuat.", siswa: siswaResponse });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
+  },
+];
 
-    const existing = await User.findOne({ $or: [{ email }, { identifier }] });
-    if (existing) {
-      return res
-        .status(400)
-        .json({ message: "Email atau NIS sudah digunakan." });
+exports.createGuru = [
+  logActivity(
+    "CREATE_GURU",
+    (req) =>
+      `Membuat pengguna guru baru: ${req.body.name} (${req.body.identifier}).`
+  ),
+  async (req, res) => {
+    try {
+      const { name, email, identifier } = req.body;
+      if (!name || !email || !identifier) {
+        return res
+          .status(400)
+          .json({ message: "Nama, email, dan NIP wajib diisi." });
+      }
+
+      const existing = await User.findOne({ $or: [{ email }, { identifier }] });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Email atau NIP sudah digunakan." });
+      }
+
+      const hashedPassword = await bcrypt.hash(identifier, 10);
+      const newGuru = new User({
+        name,
+        email,
+        identifier,
+        password: hashedPassword,
+        role: "guru",
+        isPasswordDefault: true,
+      });
+      await newGuru.save();
+
+      const guruResponse = await User.findById(newGuru._id).select("-password");
+
+      res
+        .status(201)
+        .json({ message: "Guru berhasil dibuat.", guru: guruResponse });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
+  },
+];
 
-    const kelasData = await Kelas.findById(kelas);
-    if (!kelasData) {
-      return res.status(400).json({ message: "Kelas tidak ditemukan." });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newSiswa = new User({
-      name,
-      email,
-      identifier,
-      password: hashedPassword,
-      kelas,
-      role: "siswa",
-      isPasswordDefault: false,
-    });
-    await newSiswa.save();
-
-    await Kelas.findByIdAndUpdate(kelas, {
-      $addToSet: { siswa: newSiswa._id },
-    });
-
-    const siswaResponse = await User.findById(newSiswa._id)
-      .populate("kelas", "nama tingkat jurusan")
-      .select("-password");
-
-    res
-      .status(201)
-      .json({ message: "Siswa berhasil dibuat.", siswa: siswaResponse });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
-exports.createGuru = async (req, res) => {
-  try {
-    const { name, email, identifier } = req.body;
-    if (!name || !email || !identifier) {
-      return res
-        .status(400)
-        .json({ message: "Nama, email, dan NIP wajib diisi." });
-    }
-
-    const existing = await User.findOne({ $or: [{ email }, { identifier }] });
-    if (existing) {
-      return res
-        .status(400)
-        .json({ message: "Email atau NIP sudah digunakan." });
-    }
-
-    const hashedPassword = await bcrypt.hash(identifier, 10);
-    const newGuru = new User({
-      name,
-      email,
-      identifier,
-      password: hashedPassword,
-      role: "guru",
-      isPasswordDefault: true,
-    });
-    await newGuru.save();
-
-    const guruResponse = await User.findById(newGuru._id).select("-password");
-
-    res
-      .status(201)
-      .json({ message: "Guru berhasil dibuat.", guru: guruResponse });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
-/**
- * @summary Get All Users with Pagination and Search
- */
 exports.getAllUsers = async (req, res) => {
   try {
-    // 1. Ambil parameter query untuk pagination dan filter
     const {
       role,
       isActive,
@@ -784,7 +929,6 @@ exports.getAllUsers = async (req, res) => {
       sortOrder = "desc",
     } = req.query;
 
-    // 2. Buat objek query dasar untuk Mongoose
     let query = {};
     if (role && role !== "all") {
       query.role = role;
@@ -793,7 +937,7 @@ exports.getAllUsers = async (req, res) => {
       query.isActive = isActive === "true";
     }
     if (search) {
-      const searchRegex = new RegExp(search, "i"); // 'i' for case-insensitive
+      const searchRegex = new RegExp(search, "i");
       query.$or = [
         { name: searchRegex },
         { email: searchRegex },
@@ -801,7 +945,6 @@ exports.getAllUsers = async (req, res) => {
       ];
     }
 
-    // 3. Konfigurasi options untuk mongoose-paginate-v2
     const options = {
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
@@ -810,13 +953,11 @@ exports.getAllUsers = async (req, res) => {
         { path: "mataPelajaran", select: "nama kode" },
         { path: "kelas", select: "nama tingkat jurusan" },
       ],
-      select: "-password", // Jangan pernah kirim password ke client
+      select: "-password",
     };
 
-    // 4. Jalankan query menggunakan metode .paginate()
     const result = await User.paginate(query, options);
 
-    // 5. Kirim hasil sebagai response
     res.json(result);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
@@ -839,126 +980,139 @@ exports.getUserById = async (req, res) => {
   }
 };
 
-exports.updateUser = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, email, isActive, kelas } = req.body;
+exports.updateUser = [
+  logActivity(
+    "UPDATE_USER",
+    (req) => `Memperbarui data pengguna ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, email, isActive, kelas } = req.body;
 
-    const user = await User.findById(id);
-    if (!user) {
-      return res.status(404).json({ message: "User tidak ditemukan." });
-    }
+      const user = await User.findById(id);
+      if (!user) {
+        return res.status(404).json({ message: "User tidak ditemukan." });
+      }
 
-    // --- LOGIKA BARU UNTUK RIWAYAT KELAS ---
-    if (user.role === "siswa" && kelas && user.kelas?.toString() !== kelas) {
-      // Ambil pengaturan semester & tahun ajaran aktif
-      const settings = await Settings.getSettings();
+      if (user.role === "siswa" && kelas && user.kelas?.toString() !== kelas) {
+        const settings = await Settings.getSettings();
 
-      // Cek apakah riwayat untuk periode ini sudah ada untuk menghindari duplikat
-      const sudahAdaDiRiwayat = user.riwayatKelas.some(
-        (riwayat) =>
-          riwayat.kelas.equals(user.kelas) &&
-          riwayat.tahunAjaran === settings.tahunAjaranAktif &&
-          riwayat.semester === settings.semesterAktif
-      );
+        const sudahAdaDiRiwayat = user.riwayatKelas.some(
+          (riwayat) =>
+            riwayat.kelas.equals(user.kelas) &&
+            riwayat.tahunAjaran === settings.tahunAjaranAktif &&
+            riwayat.semester === settings.semesterAktif
+        );
 
-      // Jika ada kelas lama dan belum tercatat di riwayat untuk periode ini
-      if (user.kelas && !sudahAdaDiRiwayat) {
-        user.riwayatKelas.push({
-          kelas: user.kelas,
-          tahunAjaran: settings.tahunAjaranAktif,
-          semester: settings.semesterAktif,
+        if (user.kelas && !sudahAdaDiRiwayat) {
+          user.riwayatKelas.push({
+            kelas: user.kelas,
+            tahunAjaran: settings.tahunAjaranAktif,
+            semester: settings.semesterAktif,
+          });
+        }
+
+        if (user.kelas) {
+          await Kelas.findByIdAndUpdate(user.kelas, {
+            $pull: { siswa: user._id },
+          });
+        }
+        user.kelas = kelas;
+        await Kelas.findByIdAndUpdate(kelas, {
+          $addToSet: { siswa: user._id },
         });
       }
-      // ---------------------------------------------
 
-      // Proses pemindahan siswa dari kelas lama ke kelas baru
-      if (user.kelas) {
-        await Kelas.findByIdAndUpdate(user.kelas, {
-          $pull: { siswa: user._id },
-        });
-      }
-      user.kelas = kelas;
-      await Kelas.findByIdAndUpdate(kelas, { $addToSet: { siswa: user._id } });
+      if (name) user.name = name;
+      if (email) user.email = email;
+      if (isActive !== undefined) user.isActive = isActive;
+
+      await user.save();
+
+      const updatedUser = await User.findById(id)
+        .populate("mataPelajaran", "nama kode")
+        .populate("kelas", "nama tingkat jurusan")
+        .select("-password");
+
+      res.json({ message: "User berhasil diupdate.", user: updatedUser });
+    } catch (error) {
+      res.status(500).json({
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
+      });
     }
+  },
+];
 
-    // Update data umum
-    if (name) user.name = name;
-    if (email) user.email = email;
-    if (isActive !== undefined) user.isActive = isActive;
+exports.deleteUser = [
+  logActivity(
+    "DELETE_USER",
+    (req) => `Menonaktifkan pengguna ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      const userId = req.params.id;
+      const user = await User.findById(userId).session(session);
 
-    await user.save();
+      if (!user) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ message: "User tidak ditemukan." });
+      }
 
-    const updatedUser = await User.findById(id)
-      .populate("mataPelajaran", "nama kode")
-      .populate("kelas", "nama tingkat jurusan")
-      .select("-password");
+      user.isActive = false;
 
-    res.json({ message: "User berhasil diupdate.", user: updatedUser });
-  } catch (error) {
-    res.status(500).json({
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
+      if (user.role === "siswa" && user.kelas) {
+        await Kelas.findByIdAndUpdate(
+          user.kelas,
+          { $pull: { siswa: userId } },
+          { session }
+        );
+      }
 
-exports.deleteUser = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  try {
-    const userId = req.params.id;
-    const user = await User.findById(userId).session(session);
+      await user.save({ session });
 
-    if (!user) {
+      await session.commitTransaction();
+      res.json({
+        message: "User berhasil dinonaktifkan dan relasi data dibersihkan.",
+      });
+    } catch (error) {
       await session.abortTransaction();
+      res
+        .status(500)
+        .json({ message: "Gagal menonaktifkan user.", error: error.message });
+    } finally {
       session.endSession();
-      return res.status(404).json({ message: "User tidak ditemukan." });
     }
+  },
+];
 
-    user.isActive = false;
+exports.resetPassword = [
+  logActivity(
+    "RESET_PASSWORD",
+    (req) => `Mereset password untuk pengguna ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.params.id);
+      if (!user) {
+        return res.status(404).json({ message: "User tidak ditemukan." });
+      }
 
-    if (user.role === "siswa" && user.kelas) {
-      await Kelas.findByIdAndUpdate(
-        user.kelas,
-        { $pull: { siswa: userId } },
-        { session }
-      );
+      const hashedPassword = await bcrypt.hash(user.identifier, 10);
+      user.password = hashedPassword;
+      user.isPasswordDefault = true;
+      await user.save();
+
+      res.json({ message: "Password berhasil direset ke identifier." });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
-
-    await user.save({ session });
-
-    await session.commitTransaction();
-    res.json({
-      message: "User berhasil dinonaktifkan dan relasi data dibersihkan.",
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    res
-      .status(500)
-      .json({ message: "Gagal menonaktifkan user.", error: error.message });
-  } finally {
-    session.endSession();
-  }
-};
-
-exports.resetPassword = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ message: "User tidak ditemukan." });
-    }
-
-    const hashedPassword = await bcrypt.hash(user.identifier, 10);
-    user.password = hashedPassword;
-    user.isPasswordDefault = true;
-    await user.save();
-
-    res.json({ message: "Password berhasil direset ke identifier." });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
+  },
+];
 
 // ============= MATA PELAJARAN MANAGEMENT =============
 exports.getMataPelajaranStats = async (req, res) => {
@@ -1020,38 +1174,43 @@ exports.getMataPelajaranStats = async (req, res) => {
   }
 };
 
-exports.createMataPelajaran = async (req, res) => {
-  try {
-    const { nama, kode, deskripsi } = req.body;
-    if (!nama || !kode) {
-      return res
-        .status(400)
-        .json({ message: "Nama dan kode mata pelajaran wajib diisi." });
+exports.createMataPelajaran = [
+  logActivity(
+    "CREATE_MATAPELAJARAN",
+    (req) => `Membuat mata pelajaran baru: ${req.body.nama} (${req.body.kode}).`
+  ),
+  async (req, res) => {
+    try {
+      const { nama, kode, deskripsi } = req.body;
+      if (!nama || !kode) {
+        return res
+          .status(400)
+          .json({ message: "Nama dan kode mata pelajaran wajib diisi." });
+      }
+      const existing = await MataPelajaran.findOne({
+        $or: [{ nama }, { kode }],
+      });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Nama atau kode mata pelajaran sudah ada." });
+      }
+      const mataPelajaran = new MataPelajaran({
+        nama,
+        kode: kode.toUpperCase(),
+        deskripsi,
+        createdBy: req.user.id,
+      });
+      await mataPelajaran.save();
+      res
+        .status(201)
+        .json({ message: "Mata pelajaran berhasil dibuat.", mataPelajaran });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
-    const existing = await MataPelajaran.findOne({ $or: [{ nama }, { kode }] });
-    if (existing) {
-      return res
-        .status(400)
-        .json({ message: "Nama atau kode mata pelajaran sudah ada." });
-    }
-    const mataPelajaran = new MataPelajaran({
-      nama,
-      kode: kode.toUpperCase(),
-      deskripsi,
-      createdBy: req.user.id,
-    });
-    await mataPelajaran.save();
-    res
-      .status(201)
-      .json({ message: "Mata pelajaran berhasil dibuat.", mataPelajaran });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
+  },
+];
 
-/**
- * @summary Get All Mata Pelajaran with Pagination and Search
- */
 exports.getAllMataPelajaran = async (req, res) => {
   try {
     const {
@@ -1084,7 +1243,6 @@ exports.getAllMataPelajaran = async (req, res) => {
 
     const result = await MataPelajaran.paginate(query, options);
 
-    // Manually add guruCount to each document
     const finalData = result.docs.map((mapel) => {
       const mapelObj = mapel.toObject();
       mapelObj.jumlahGuru = mapelObj.guru.length;
@@ -1113,44 +1271,60 @@ exports.getMataPelajaranById = async (req, res) => {
   }
 };
 
-exports.updateMataPelajaran = async (req, res) => {
-  try {
-    const mataPelajaran = await MataPelajaran.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      {
-        new: true,
+exports.updateMataPelajaran = [
+  logActivity(
+    "UPDATE_MATAPELAJARAN",
+    (req) => `Memperbarui mata pelajaran ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const mataPelajaran = await MataPelajaran.findByIdAndUpdate(
+        req.params.id,
+        req.body,
+        {
+          new: true,
+        }
+      );
+      if (!mataPelajaran) {
+        return res
+          .status(404)
+          .json({ message: "Mata pelajaran tidak ditemukan." });
       }
-    );
-    if (!mataPelajaran) {
-      return res
-        .status(404)
-        .json({ message: "Mata pelajaran tidak ditemukan." });
+      res.json({
+        message: "Mata pelajaran berhasil diupdate.",
+        mataPelajaran,
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
-    res.json({
-      message: "Mata pelajaran berhasil diupdate.",
-      mataPelajaran,
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
+  },
+];
 
-exports.deleteMataPelajaran = async (req, res) => {
-  try {
-    const mataPelajaran = await MataPelajaran.findByIdAndUpdate(req.params.id, {
-      isActive: false,
-    });
-    if (!mataPelajaran) {
-      return res
-        .status(404)
-        .json({ message: "Mata pelajaran tidak ditemukan." });
+exports.deleteMataPelajaran = [
+  logActivity(
+    "DELETE_MATAPELAJARAN",
+    (req) => `Menonaktifkan (soft delete) mata pelajaran ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const mataPelajaran = await MataPelajaran.findByIdAndUpdate(
+        req.params.id,
+        {
+          isActive: false,
+        }
+      );
+      if (!mataPelajaran) {
+        return res
+          .status(404)
+          .json({ message: "Mata pelajaran tidak ditemukan." });
+      }
+      res.json({ message: "Mata pelajaran berhasil dihapus." });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
-    res.json({ message: "Mata pelajaran berhasil dihapus." });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
+  },
+];
+
 exports.forceDeleteMataPelajaran = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1169,7 +1343,6 @@ exports.forceDeleteMataPelajaran = async (req, res) => {
       });
     }
 
-    // Hitung semua relasi data
     const [jumlahGuru, jumlahJadwal, jumlahNilai, jumlahTugas, jumlahMateri] =
       await Promise.all([
         User.countDocuments({ mataPelajaran: mapelId }).session(session),
@@ -1192,7 +1365,6 @@ exports.forceDeleteMataPelajaran = async (req, res) => {
       0
     );
 
-    // Jika ada data terkait dan belum konfirmasi, berikan warning
     if (totalRelasi > 0 && req.query.confirm !== "yes") {
       await session.abortTransaction();
       return res.status(400).json({
@@ -1213,16 +1385,13 @@ exports.forceDeleteMataPelajaran = async (req, res) => {
       });
     }
 
-    // Jika tidak ada data terkait atau sudah konfirmasi, hapus permanen
     if (totalRelasi === 0 || req.query.confirm === "yes") {
-      // Hapus relasi di User (guru)
       await User.updateMany(
         { mataPelajaran: mapelId },
         { $pull: { mataPelajaran: mapelId } },
         { session }
       );
 
-      // Hapus data terkait
       await Promise.all([
         Jadwal.deleteMany({ mataPelajaran: mapelId }, { session }),
         Nilai.deleteMany({ mataPelajaran: mapelId }, { session }),
@@ -1230,7 +1399,6 @@ exports.forceDeleteMataPelajaran = async (req, res) => {
         Materi.deleteMany({ mataPelajaran: mapelId }, { session }),
       ]);
 
-      // Hapus mata pelajaran permanen
       await MataPelajaran.findByIdAndDelete(mapelId).session(session);
 
       await session.commitTransaction();
@@ -1273,11 +1441,9 @@ exports.restoreMataPelajaran = async (req, res) => {
       });
     }
 
-    // Restore mata pelajaran
     mataPelajaran.isActive = true;
     await mataPelajaran.save();
 
-    // Aktifkan kembali jadwal terkait (opsional)
     const jadwalUpdated = await Jadwal.updateMany(
       { mataPelajaran: req.params.id },
       { isActive: true }
@@ -1298,129 +1464,141 @@ exports.restoreMataPelajaran = async (req, res) => {
     });
   }
 };
-exports.assignGuruMataPelajaran = async (req, res) => {
-  try {
-    const { mataPelajaranId, guruId } = req.body;
 
-    const mataPelajaran = await MataPelajaran.findById(mataPelajaranId);
-    if (!mataPelajaran) {
-      return res
-        .status(404)
-        .json({ message: "Mata pelajaran tidak ditemukan." });
+exports.assignGuruMataPelajaran = [
+  logActivity(
+    "ASSIGN_GURU_MAPEL",
+    (req) =>
+      `Menugaskan guru ID ${req.body.guruId} ke mata pelajaran ID ${req.body.mataPelajaranId}.`
+  ),
+  async (req, res) => {
+    try {
+      const { mataPelajaranId, guruId } = req.body;
+
+      const mataPelajaran = await MataPelajaran.findById(mataPelajaranId);
+      if (!mataPelajaran) {
+        return res
+          .status(404)
+          .json({ message: "Mata pelajaran tidak ditemukan." });
+      }
+
+      const guru = await User.findOne({ _id: guruId, role: "guru" });
+      if (!guru) {
+        return res.status(404).json({ message: "Guru tidak ditemukan." });
+      }
+
+      await Promise.all([
+        User.findByIdAndUpdate(guruId, {
+          $addToSet: { mataPelajaran: mataPelajaranId },
+        }),
+        MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
+          $addToSet: { guru: guruId },
+        }),
+      ]);
+
+      res.json({ message: "Guru berhasil ditugaskan ke mata pelajaran." });
+    } catch (error) {
+      console.error("Error assigning guru:", error);
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
+  },
+];
 
-    const guru = await User.findOne({ _id: guruId, role: "guru" });
-    if (!guru) {
-      return res.status(404).json({ message: "Guru tidak ditemukan." });
+exports.unassignGuruMataPelajaran = [
+  logActivity(
+    "UNASSIGN_GURU_MAPEL",
+    (req) =>
+      `Melepas penugasan guru ID ${req.body.guruId} dari mata pelajaran ID ${req.body.mataPelajaranId}.`
+  ),
+  async (req, res) => {
+    try {
+      const { mataPelajaranId, guruId } = req.body;
+
+      const mataPelajaran = await MataPelajaran.findById(mataPelajaranId);
+      if (!mataPelajaran) {
+        return res
+          .status(404)
+          .json({ message: "Mata pelajaran tidak ditemukan." });
+      }
+      const guru = await User.findOne({ _id: guruId, role: "guru" });
+      if (!guru) {
+        return res.status(404).json({ message: "Guru tidak ditemukan." });
+      }
+
+      await Promise.all([
+        User.findByIdAndUpdate(guruId, {
+          $pull: { mataPelajaran: mataPelajaranId },
+        }),
+        MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
+          $pull: { guru: guruId },
+        }),
+      ]);
+
+      res.json({
+        message: "Penugasan guru dari mata pelajaran berhasil dihapus.",
+      });
+    } catch (error) {
+      console.error("Error unassigning guru:", error);
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
-
-    await Promise.all([
-      User.findByIdAndUpdate(guruId, {
-        $addToSet: { mataPelajaran: mataPelajaranId },
-      }),
-      MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
-        $addToSet: { guru: guruId },
-      }),
-    ]);
-
-    res.json({ message: "Guru berhasil ditugaskan ke mata pelajaran." });
-  } catch (error) {
-    console.error("Error assigning guru:", error);
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
-exports.unassignGuruMataPelajaran = async (req, res) => {
-  try {
-    const { mataPelajaranId, guruId } = req.body;
-
-    const mataPelajaran = await MataPelajaran.findById(mataPelajaranId);
-    if (!mataPelajaran) {
-      return res
-        .status(404)
-        .json({ message: "Mata pelajaran tidak ditemukan." });
-    }
-    const guru = await User.findOne({ _id: guruId, role: "guru" });
-    if (!guru) {
-      return res.status(404).json({ message: "Guru tidak ditemukan." });
-    }
-
-    await Promise.all([
-      User.findByIdAndUpdate(guruId, {
-        $pull: { mataPelajaran: mataPelajaranId },
-      }),
-      MataPelajaran.findByIdAndUpdate(mataPelajaranId, {
-        $pull: { guru: guruId },
-      }),
-    ]);
-
-    res.json({
-      message: "Penugasan guru dari mata pelajaran berhasil dihapus.",
-    });
-  } catch (error) {
-    console.error("Error unassigning guru:", error);
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
+  },
+];
 
 // ============= KELAS MANAGEMENT (COMPLETE WITH MULTI-LEVEL DELETE) =============
+exports.createKelas = [
+  logActivity(
+    "CREATE_KELAS",
+    (req) => `Membuat kelas baru: ${req.body.nama} T.A ${req.body.tahunAjaran}.`
+  ),
+  async (req, res) => {
+    try {
+      const { nama, tingkat, jurusan, tahunAjaran, waliKelas } = req.body;
+      if (!nama || !tingkat || !tahunAjaran) {
+        return res.status(400).json({
+          success: false,
+          message: "Nama, tingkat, dan tahun ajaran wajib diisi.",
+        });
+      }
 
-// FUNGSI YANG HILANG - DITAMBAHKAN
-/**
- * Create a new Kelas
- */
-exports.createKelas = async (req, res) => {
-  try {
-    const { nama, tingkat, jurusan, tahunAjaran, waliKelas } = req.body;
-    if (!nama || !tingkat || !tahunAjaran) {
-      return res.status(400).json({
+      const existingKelas = await Kelas.findOne({ nama, tahunAjaran });
+      if (existingKelas) {
+        return res.status(400).json({
+          success: false,
+          message: "Kelas dengan nama dan tahun ajaran yang sama sudah ada.",
+        });
+      }
+
+      const newKelas = new Kelas({
+        nama,
+        tingkat,
+        jurusan,
+        tahunAjaran,
+        waliKelas,
+        createdBy: req.user.id,
+      });
+
+      await newKelas.save();
+      const populatedKelas = await Kelas.findById(newKelas._id).populate(
+        "waliKelas",
+        "name identifier"
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Kelas berhasil dibuat.",
+        data: populatedKelas,
+      });
+    } catch (error) {
+      console.error("Error creating kelas:", error);
+      res.status(500).json({
         success: false,
-        message: "Nama, tingkat, dan tahun ajaran wajib diisi.",
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
       });
     }
+  },
+];
 
-    const existingKelas = await Kelas.findOne({ nama, tahunAjaran });
-    if (existingKelas) {
-      return res.status(400).json({
-        success: false,
-        message: "Kelas dengan nama dan tahun ajaran yang sama sudah ada.",
-      });
-    }
-
-    const newKelas = new Kelas({
-      nama,
-      tingkat,
-      jurusan,
-      tahunAjaran,
-      waliKelas,
-      createdBy: req.user.id,
-    });
-
-    await newKelas.save();
-    const populatedKelas = await Kelas.findById(newKelas._id).populate(
-      "waliKelas",
-      "name identifier"
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Kelas berhasil dibuat.",
-      data: populatedKelas,
-    });
-  } catch (error) {
-    console.error("Error creating kelas:", error);
-    res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
-
-// FUNGSI YANG HILANG - DITAMBAHKAN
-/**
- * Get Kelas by ID
- */
 exports.getKelasById = async (req, res) => {
   try {
     const kelas = await Kelas.findById(req.params.id)
@@ -1448,44 +1626,43 @@ exports.getKelasById = async (req, res) => {
   }
 };
 
-// FUNGSI YANG HILANG - DITAMBAHKAN
-/**
- * Update Kelas
- */
-exports.updateKelas = async (req, res) => {
-  try {
-    const { nama, tingkat, jurusan, tahunAjaran, waliKelas, isActive } =
-      req.body;
-    const updatedKelas = await Kelas.findByIdAndUpdate(
-      req.params.id,
-      { nama, tingkat, jurusan, tahunAjaran, waliKelas, isActive },
-      { new: true, runValidators: true }
-    ).populate("waliKelas", "name identifier");
+exports.updateKelas = [
+  logActivity(
+    "UPDATE_KELAS",
+    (req) => `Memperbarui data kelas ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const { nama, tingkat, jurusan, tahunAjaran, waliKelas, isActive } =
+        req.body;
+      const updatedKelas = await Kelas.findByIdAndUpdate(
+        req.params.id,
+        { nama, tingkat, jurusan, tahunAjaran, waliKelas, isActive },
+        { new: true, runValidators: true }
+      ).populate("waliKelas", "name identifier");
 
-    if (!updatedKelas) {
-      return res.status(404).json({
+      if (!updatedKelas) {
+        return res.status(404).json({
+          success: false,
+          message: "Kelas tidak ditemukan.",
+        });
+      }
+      res.json({
+        success: true,
+        message: "Kelas berhasil diperbarui.",
+        data: updatedKelas,
+      });
+    } catch (error) {
+      console.error("Error updating kelas:", error);
+      res.status(500).json({
         success: false,
-        message: "Kelas tidak ditemukan.",
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
       });
     }
-    res.json({
-      success: true,
-      message: "Kelas berhasil diperbarui.",
-      data: updatedKelas,
-    });
-  } catch (error) {
-    console.error("Error updating kelas:", error);
-    res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
+  },
+];
 
-/**
- * @summary Get All Kelas with Pagination and Search
- */
 exports.getAllKelas = async (req, res) => {
   try {
     const {
@@ -1498,7 +1675,6 @@ exports.getAllKelas = async (req, res) => {
     } = req.query;
 
     let query = {};
-    // By default, filter by active. If includeInactive is true, don't filter by isActive.
     if (isActive !== undefined) {
       query.isActive = isActive === "true";
     }
@@ -1521,8 +1697,6 @@ exports.getAllKelas = async (req, res) => {
         { path: "waliKelas", select: "name identifier" },
         { path: "createdBy", select: "name" },
       ],
-      // Custom population to get the count of students
-      // This is a more advanced feature of the plugin
       customLabels: {
         docs: "data",
         totalDocs: "totalData",
@@ -1531,16 +1705,15 @@ exports.getAllKelas = async (req, res) => {
 
     const result = await Kelas.paginate(query, options);
 
-    // Manually add siswaCount to each document
     const populatedResult = await Kelas.populate(result.data, {
       path: "siswa",
-      select: "_id", // Only need the ID to count
+      select: "_id",
     });
 
     const finalData = populatedResult.map((kelas) => {
       const kelasObj = kelas.toObject();
       kelasObj.jumlahSiswa = kelasObj.siswa.length;
-      delete kelasObj.siswa; // Remove the full siswa array from final response
+      delete kelasObj.siswa;
       return kelasObj;
     });
 
@@ -1559,69 +1732,65 @@ exports.getAllKelas = async (req, res) => {
   }
 };
 
-/**
- * Soft Delete Kelas - Nonaktifkan kelas (default behavior)
- */
-exports.deleteKelas = async (req, res) => {
-  try {
-    const kelas = await Kelas.findById(req.params.id);
+exports.deleteKelas = [
+  logActivity(
+    "DELETE_KELAS",
+    (req) => `Menonaktifkan (soft delete) kelas ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const kelas = await Kelas.findById(req.params.id);
 
-    if (!kelas) {
-      return res.status(404).json({
+      if (!kelas) {
+        return res.status(404).json({
+          success: false,
+          message: "Kelas tidak ditemukan.",
+        });
+      }
+
+      if (!kelas.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Kelas sudah nonaktif.",
+        });
+      }
+
+      const jumlahSiswaAktif = await User.countDocuments({
+        kelas: req.params.id,
+        role: "siswa",
+        isActive: true,
+      });
+
+      if (jumlahSiswaAktif > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Tidak dapat menonaktifkan kelas. Masih ada ${jumlahSiswaAktif} siswa aktif. Pindahkan siswa terlebih dahulu atau gunakan force delete.`,
+          canForceDelete: true,
+          siswaCount: jumlahSiswaAktif,
+        });
+      }
+
+      kelas.isActive = false;
+      await kelas.save();
+
+      await Jadwal.updateMany({ kelas: req.params.id }, { isActive: false });
+
+      res.json({
+        success: true,
+        message:
+          "Kelas berhasil dinonaktifkan. Data masih dapat dipulihkan jika diperlukan.",
+      });
+    } catch (error) {
+      console.error("Error soft deleting kelas:", error);
+      res.status(500).json({
         success: false,
-        message: "Kelas tidak ditemukan.",
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
       });
     }
+  },
+];
 
-    if (!kelas.isActive) {
-      return res.status(400).json({
-        success: false,
-        message: "Kelas sudah nonaktif.",
-      });
-    }
-
-    // Cek apakah kelas masih memiliki siswa aktif
-    const jumlahSiswaAktif = await User.countDocuments({
-      kelas: req.params.id,
-      role: "siswa",
-      isActive: true,
-    });
-
-    if (jumlahSiswaAktif > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Tidak dapat menonaktifkan kelas. Masih ada ${jumlahSiswaAktif} siswa aktif. Pindahkan siswa terlebih dahulu atau gunakan force delete.`,
-        canForceDelete: true,
-        siswaCount: jumlahSiswaAktif,
-      });
-    }
-
-    // Soft delete
-    kelas.isActive = false;
-    await kelas.save();
-
-    // Nonaktifkan juga jadwal terkait
-    await Jadwal.updateMany({ kelas: req.params.id }, { isActive: false });
-
-    res.json({
-      success: true,
-      message:
-        "Kelas berhasil dinonaktifkan. Data masih dapat dipulihkan jika diperlukan.",
-    });
-  } catch (error) {
-    console.error("Error soft deleting kelas:", error);
-    res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
-
-/**
- * Force Delete Kelas - Hapus permanen dengan validasi
- * Query: ?force=true
- */
 exports.forceDeleteKelas = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1638,7 +1807,6 @@ exports.forceDeleteKelas = async (req, res) => {
       });
     }
 
-    // Hitung semua relasi data
     const [
       jumlahSiswa,
       jumlahJadwal,
@@ -1669,7 +1837,6 @@ exports.forceDeleteKelas = async (req, res) => {
       0
     );
 
-    // Jika ada data terkait, berikan warning dan opsi
     if (totalRelasi > 0 && req.query.confirm !== "yes") {
       await session.abortTransaction();
       return res.status(400).json({
@@ -1679,22 +1846,18 @@ exports.forceDeleteKelas = async (req, res) => {
         dataRelasi,
         totalRelasi,
         actions: {
-          // Jika mau tetap force delete, kirim confirmation
           confirmDelete: {
             method: "DELETE",
             url: `/super-admin/kelas/${kelasId}/force?confirm=yes`,
             warning: "Akan menghapus SEMUA data terkait secara permanen",
           },
-          // Atau pindahkan siswa dulu
           alternative:
             "Pindahkan siswa ke kelas lain terlebih dahulu, lalu hapus kelas kosong",
         },
       });
     }
 
-    // Jika tidak ada data terkait, langsung hapus
     if (totalRelasi === 0 || req.query.confirm === "yes") {
-      // Hapus semua data terkait dulu
       await Promise.all([
         User.updateMany(
           { kelas: kelasId },
@@ -1708,7 +1871,6 @@ exports.forceDeleteKelas = async (req, res) => {
         Materi.deleteMany({ kelas: kelasId }, { session }),
       ]);
 
-      // Hapus kelas
       await Kelas.findByIdAndDelete(kelasId).session(session);
 
       await session.commitTransaction();
@@ -1732,9 +1894,6 @@ exports.forceDeleteKelas = async (req, res) => {
   }
 };
 
-/**
- * Restore Kelas - Aktifkan kembali kelas yang di-soft delete
- */
 exports.restoreKelas = async (req, res) => {
   try {
     const kelas = await Kelas.findById(req.params.id);
@@ -1753,7 +1912,6 @@ exports.restoreKelas = async (req, res) => {
       });
     }
 
-    // Validasi: Cek apakah wali kelas masih aktif
     if (kelas.waliKelas) {
       const waliKelas = await User.findById(kelas.waliKelas);
       if (!waliKelas || !waliKelas.isActive) {
@@ -1765,11 +1923,9 @@ exports.restoreKelas = async (req, res) => {
       }
     }
 
-    // Restore kelas
     kelas.isActive = true;
     await kelas.save();
 
-    // Aktifkan kembali jadwal terkait (opsional)
     const jadwalUpdated = await Jadwal.updateMany(
       { kelas: req.params.id },
       { isActive: true }
@@ -1791,9 +1947,6 @@ exports.restoreKelas = async (req, res) => {
   }
 };
 
-/**
- * Get Kelas Stats - Info detail sebelum delete
- */
 exports.getKelasStats = async (req, res) => {
   try {
     const kelasId = req.params.id;
@@ -1866,10 +2019,6 @@ exports.getKelasStats = async (req, res) => {
 };
 
 // ============= JADWAL MANAGEMENT (ENHANCED) =============
-
-/**
- * Get Jadwal Stats - Info detail sebelum delete
- */
 exports.getJadwalStats = async (req, res) => {
   try {
     const jadwalId = req.params.id;
@@ -1885,7 +2034,6 @@ exports.getJadwalStats = async (req, res) => {
       });
     }
 
-    // Hitung data terkait
     const [
       jumlahAbsensi,
       jumlahSesiPresensi,
@@ -1955,245 +2103,47 @@ exports.getJadwalStats = async (req, res) => {
   }
 };
 
-/**
- * Create Jadwal with Enhanced Time Validation
- * Mendukung jadwal berurutan seperti 12:35-13:10, 13:10-14:00
- */
-exports.createJadwal = async (req, res) => {
-  try {
-    const {
-      kelas,
-      mataPelajaran,
-      guru,
-      hari,
-      jamMulai,
-      jamSelesai,
-      semester,
-      tahunAjaran,
-    } = req.body;
-
-    // Validasi field wajib
-    if (
-      !kelas ||
-      !mataPelajaran ||
-      !guru ||
-      !hari ||
-      !jamMulai ||
-      !jamSelesai ||
-      !semester ||
-      !tahunAjaran
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Semua field jadwal wajib diisi.",
-      });
-    }
-
-    // Validasi format waktu (HH:MM)
-    const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
-    if (!timeRegex.test(jamMulai) || !timeRegex.test(jamSelesai)) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Format waktu tidak valid. Gunakan format HH:MM (contoh: 07:00, 13:45)",
-      });
-    }
-
-    // Konversi waktu ke menit untuk perbandingan
-    const parseTime = (time) => {
-      const [hours, minutes] = time.split(":").map(Number);
-      return hours * 60 + minutes;
-    };
-
-    const startMinutes = parseTime(jamMulai);
-    const endMinutes = parseTime(jamSelesai);
-
-    // Validasi: jam selesai harus lebih besar dari jam mulai
-    if (endMinutes <= startMinutes) {
-      return res.status(400).json({
-        success: false,
-        message: "Jam selesai harus lebih besar dari jam mulai.",
-      });
-    }
-
-    // Validasi guru
-    const guruData = await User.findOne({
-      _id: guru,
-      role: "guru",
-      isActive: true,
-    });
-    if (!guruData) {
-      return res.status(404).json({
-        success: false,
-        message: "Guru tidak ditemukan atau tidak aktif.",
-      });
-    }
-
-    // Validasi: Guru harus mengampu mata pelajaran ini
-    if (!guruData.mataPelajaran.includes(mataPelajaran)) {
-      return res.status(400).json({
-        success: false,
-        message: "Guru tidak mengampu mata pelajaran ini.",
-      });
-    }
-
-    // Validasi: Kelas aktif
-    const kelasData = await Kelas.findOne({ _id: kelas, isActive: true });
-    if (!kelasData) {
-      return res.status(404).json({
-        success: false,
-        message: "Kelas tidak ditemukan atau tidak aktif.",
-      });
-    }
-
-    // Validasi: Mata pelajaran aktif
-    const mapelData = await MataPelajaran.findOne({
-      _id: mataPelajaran,
-      isActive: true,
-    });
-    if (!mapelData) {
-      return res.status(404).json({
-        success: false,
-        message: "Mata pelajaran tidak ditemukan atau tidak aktif.",
-      });
-    }
-
-    // CEK BENTROK JADWAL dengan logika yang lebih fleksibel
-    // Dua jadwal bentrok jika:
-    // 1. Jam mulai jadwal baru berada di antara jadwal existing (startA < startB < endA)
-    // 2. Jam selesai jadwal baru berada di antara jadwal existing (startA < endB < endA)
-    // 3. Jadwal baru mencakup jadwal existing (startB <= startA && endB >= endA)
-
-    // PERUBAHAN: Jadwal yang berurutan (contiguous) DIPERBOLEHKAN
-    // Misalnya: 12:35-13:10 dan 13:10-14:00 tidak dianggap bentrok
-
-    const checkConflict = async (targetId, targetField) => {
-      const existingJadwal = await Jadwal.find({
-        [targetField]: targetId,
+exports.createJadwal = [
+  logActivity(
+    "CREATE_JADWAL",
+    (req) =>
+      `Membuat jadwal baru pada hari ${req.body.hari} jam ${req.body.jamMulai}-${req.body.jamSelesai}.`
+  ),
+  async (req, res) => {
+    try {
+      const {
+        kelas,
+        mataPelajaran,
+        guru,
         hari,
-        tahunAjaran,
+        jamMulai,
+        jamSelesai,
         semester,
-        isActive: true,
-      });
+        tahunAjaran,
+      } = req.body;
 
-      for (const existing of existingJadwal) {
-        const existingStart = parseTime(existing.jamMulai);
-        const existingEnd = parseTime(existing.jamSelesai);
-
-        // Bentrok terjadi jika ada overlap EXCLUDING edges (berurutan diperbolehkan)
-        const hasOverlap =
-          startMinutes < existingEnd &&
-          endMinutes > existingStart && // Ada overlap
-          !(startMinutes === existingEnd || endMinutes === existingStart); // TAPI bukan berurutan
-
-        if (hasOverlap) {
-          return existing;
-        }
-      }
-      return null;
-    };
-
-    // Cek bentrok untuk kelas
-    const kelasConflict = await checkConflict(kelas, "kelas");
-    if (kelasConflict) {
-      return res.status(400).json({
-        success: false,
-        message: `Jadwal bentrok dengan jadwal kelas yang sudah ada pada ${hari} jam ${kelasConflict.jamMulai}-${kelasConflict.jamSelesai}`,
-        conflictWith: "kelas",
-        existingJadwal: {
-          id: kelasConflict._id,
-          jamMulai: kelasConflict.jamMulai,
-          jamSelesai: kelasConflict.jamSelesai,
-        },
-      });
-    }
-
-    // Cek bentrok untuk guru
-    const guruConflict = await checkConflict(guru, "guru");
-    if (guruConflict) {
-      return res.status(400).json({
-        success: false,
-        message: `Jadwal bentrok dengan jadwal guru yang sudah ada pada ${hari} jam ${guruConflict.jamMulai}-${guruConflict.jamSelesai}`,
-        conflictWith: "guru",
-        existingJadwal: {
-          id: guruConflict._id,
-          jamMulai: guruConflict.jamMulai,
-          jamSelesai: guruConflict.jamSelesai,
-        },
-      });
-    }
-
-    // Buat jadwal baru
-    const jadwal = new Jadwal({
-      kelas,
-      mataPelajaran,
-      guru,
-      hari,
-      jamMulai,
-      jamSelesai,
-      semester,
-      tahunAjaran,
-      createdBy: req.user.id,
-    });
-
-    await jadwal.save();
-
-    const jadwalResponse = await Jadwal.findById(jadwal._id)
-      .populate("kelas", "nama tingkat jurusan")
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name identifier");
-
-    res.status(201).json({
-      success: true,
-      message: "Jadwal berhasil dibuat.",
-      data: jadwalResponse,
-    });
-  } catch (error) {
-    console.error("Error creating jadwal:", error);
-    res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
-
-/**
- * Update Jadwal with Same Enhanced Validation
- */
-exports.updateJadwal = async (req, res) => {
-  try {
-    const jadwalId = req.params.id;
-    const {
-      kelas,
-      mataPelajaran,
-      guru,
-      hari,
-      jamMulai,
-      jamSelesai,
-      semester,
-      tahunAjaran,
-      isActive,
-    } = req.body;
-
-    const jadwal = await Jadwal.findById(jadwalId);
-    if (!jadwal) {
-      return res.status(404).json({
-        success: false,
-        message: "Jadwal tidak ditemukan.",
-      });
-    }
-
-    // Validasi format waktu jika diubah
-    if (jamMulai || jamSelesai) {
-      const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
-      const newJamMulai = jamMulai || jadwal.jamMulai;
-      const newJamSelesai = jamSelesai || jadwal.jamSelesai;
-
-      if (!timeRegex.test(newJamMulai) || !timeRegex.test(newJamSelesai)) {
+      if (
+        !kelas ||
+        !mataPelajaran ||
+        !guru ||
+        !hari ||
+        !jamMulai ||
+        !jamSelesai ||
+        !semester ||
+        !tahunAjaran
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Format waktu tidak valid. Gunakan format HH:MM",
+          message: "Semua field jadwal wajib diisi.",
+        });
+      }
+
+      const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
+      if (!timeRegex.test(jamMulai) || !timeRegex.test(jamSelesai)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Format waktu tidak valid. Gunakan format HH:MM (contoh: 07:00, 13:45)",
         });
       }
 
@@ -2202,8 +2152,8 @@ exports.updateJadwal = async (req, res) => {
         return hours * 60 + minutes;
       };
 
-      const startMinutes = parseTime(newJamMulai);
-      const endMinutes = parseTime(newJamSelesai);
+      const startMinutes = parseTime(jamMulai);
+      const endMinutes = parseTime(jamSelesai);
 
       if (endMinutes <= startMinutes) {
         return res.status(400).json({
@@ -2212,14 +2162,50 @@ exports.updateJadwal = async (req, res) => {
         });
       }
 
-      // Cek bentrok dengan jadwal lain (exclude jadwal yang sedang diupdate)
+      const guruData = await User.findOne({
+        _id: guru,
+        role: "guru",
+        isActive: true,
+      });
+      if (!guruData) {
+        return res.status(404).json({
+          success: false,
+          message: "Guru tidak ditemukan atau tidak aktif.",
+        });
+      }
+
+      if (!guruData.mataPelajaran.includes(mataPelajaran)) {
+        return res.status(400).json({
+          success: false,
+          message: "Guru tidak mengampu mata pelajaran ini.",
+        });
+      }
+
+      const kelasData = await Kelas.findOne({ _id: kelas, isActive: true });
+      if (!kelasData) {
+        return res.status(404).json({
+          success: false,
+          message: "Kelas tidak ditemukan atau tidak aktif.",
+        });
+      }
+
+      const mapelData = await MataPelajaran.findOne({
+        _id: mataPelajaran,
+        isActive: true,
+      });
+      if (!mapelData) {
+        return res.status(404).json({
+          success: false,
+          message: "Mata pelajaran tidak ditemukan atau tidak aktif.",
+        });
+      }
+
       const checkConflict = async (targetId, targetField) => {
         const existingJadwal = await Jadwal.find({
-          _id: { $ne: jadwalId }, // Exclude jadwal ini
           [targetField]: targetId,
-          hari: hari || jadwal.hari,
-          tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
-          semester: semester || jadwal.semester,
+          hari,
+          tahunAjaran,
+          semester,
           isActive: true,
         });
 
@@ -2239,102 +2225,249 @@ exports.updateJadwal = async (req, res) => {
         return null;
       };
 
-      const kelasConflict = await checkConflict(kelas || jadwal.kelas, "kelas");
+      const kelasConflict = await checkConflict(kelas, "kelas");
       if (kelasConflict) {
         return res.status(400).json({
           success: false,
-          message: `Jadwal bentrok dengan jadwal kelas yang sudah ada`,
+          message: `Jadwal bentrok dengan jadwal kelas yang sudah ada pada ${hari} jam ${kelasConflict.jamMulai}-${kelasConflict.jamSelesai}`,
           conflictWith: "kelas",
+          existingJadwal: {
+            id: kelasConflict._id,
+            jamMulai: kelasConflict.jamMulai,
+            jamSelesai: kelasConflict.jamSelesai,
+          },
         });
       }
 
-      const guruConflict = await checkConflict(guru || jadwal.guru, "guru");
+      const guruConflict = await checkConflict(guru, "guru");
       if (guruConflict) {
         return res.status(400).json({
           success: false,
-          message: `Jadwal bentrok dengan jadwal guru yang sudah ada`,
+          message: `Jadwal bentrok dengan jadwal guru yang sudah ada pada ${hari} jam ${guruConflict.jamMulai}-${guruConflict.jamSelesai}`,
           conflictWith: "guru",
+          existingJadwal: {
+            id: guruConflict._id,
+            jamMulai: guruConflict.jamMulai,
+            jamSelesai: guruConflict.jamSelesai,
+          },
         });
       }
-    }
 
-    // Update jadwal
-    const updatedJadwal = await Jadwal.findByIdAndUpdate(
-      jadwalId,
-      {
-        kelas: kelas || jadwal.kelas,
-        mataPelajaran: mataPelajaran || jadwal.mataPelajaran,
-        guru: guru || jadwal.guru,
-        hari: hari || jadwal.hari,
-        jamMulai: jamMulai || jadwal.jamMulai,
-        jamSelesai: jamSelesai || jadwal.jamSelesai,
-        semester: semester || jadwal.semester,
-        tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
-        isActive: isActive !== undefined ? isActive : jadwal.isActive,
-      },
-      { new: true, runValidators: true }
-    )
-      .populate("kelas", "nama tingkat jurusan")
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name identifier");
+      const jadwal = new Jadwal({
+        kelas,
+        mataPelajaran,
+        guru,
+        hari,
+        jamMulai,
+        jamSelesai,
+        semester,
+        tahunAjaran,
+        createdBy: req.user.id,
+      });
 
-    res.json({
-      success: true,
-      message: "Jadwal berhasil diupdate.",
-      data: updatedJadwal,
-    });
-  } catch (error) {
-    console.error("Error updating jadwal:", error);
-    res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
+      await jadwal.save();
 
-/**
- * Soft Delete Jadwal - Nonaktifkan jadwal
- */
-exports.deleteJadwal = async (req, res) => {
-  try {
-    const jadwal = await Jadwal.findById(req.params.id);
+      const jadwalResponse = await Jadwal.findById(jadwal._id)
+        .populate("kelas", "nama tingkat jurusan")
+        .populate("mataPelajaran", "nama kode")
+        .populate("guru", "name identifier");
 
-    if (!jadwal) {
-      return res.status(404).json({
+      res.status(201).json({
+        success: true,
+        message: "Jadwal berhasil dibuat.",
+        data: jadwalResponse,
+      });
+    } catch (error) {
+      console.error("Error creating jadwal:", error);
+      res.status(500).json({
         success: false,
-        message: "Jadwal tidak ditemukan.",
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
       });
     }
+  },
+];
 
-    if (!jadwal.isActive) {
-      return res.status(400).json({
+exports.updateJadwal = [
+  logActivity(
+    "UPDATE_JADWAL",
+    (req) => `Memperbarui jadwal ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const jadwalId = req.params.id;
+      const {
+        kelas,
+        mataPelajaran,
+        guru,
+        hari,
+        jamMulai,
+        jamSelesai,
+        semester,
+        tahunAjaran,
+        isActive,
+      } = req.body;
+
+      const jadwal = await Jadwal.findById(jadwalId);
+      if (!jadwal) {
+        return res.status(404).json({
+          success: false,
+          message: "Jadwal tidak ditemukan.",
+        });
+      }
+
+      if (jamMulai || jamSelesai) {
+        const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
+        const newJamMulai = jamMulai || jadwal.jamMulai;
+        const newJamSelesai = jamSelesai || jadwal.jamSelesai;
+
+        if (!timeRegex.test(newJamMulai) || !timeRegex.test(newJamSelesai)) {
+          return res.status(400).json({
+            success: false,
+            message: "Format waktu tidak valid. Gunakan format HH:MM",
+          });
+        }
+
+        const parseTime = (time) => {
+          const [hours, minutes] = time.split(":").map(Number);
+          return hours * 60 + minutes;
+        };
+
+        const startMinutes = parseTime(newJamMulai);
+        const endMinutes = parseTime(newJamSelesai);
+
+        if (endMinutes <= startMinutes) {
+          return res.status(400).json({
+            success: false,
+            message: "Jam selesai harus lebih besar dari jam mulai.",
+          });
+        }
+
+        const checkConflict = async (targetId, targetField) => {
+          const existingJadwal = await Jadwal.find({
+            _id: { $ne: jadwalId },
+            [targetField]: targetId,
+            hari: hari || jadwal.hari,
+            tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
+            semester: semester || jadwal.semester,
+            isActive: true,
+          });
+
+          for (const existing of existingJadwal) {
+            const existingStart = parseTime(existing.jamMulai);
+            const existingEnd = parseTime(existing.jamSelesai);
+
+            const hasOverlap =
+              startMinutes < existingEnd &&
+              endMinutes > existingStart &&
+              !(startMinutes === existingEnd || endMinutes === existingStart);
+
+            if (hasOverlap) {
+              return existing;
+            }
+          }
+          return null;
+        };
+
+        const kelasConflict = await checkConflict(
+          kelas || jadwal.kelas,
+          "kelas"
+        );
+        if (kelasConflict) {
+          return res.status(400).json({
+            success: false,
+            message: `Jadwal bentrok dengan jadwal kelas yang sudah ada`,
+            conflictWith: "kelas",
+          });
+        }
+
+        const guruConflict = await checkConflict(guru || jadwal.guru, "guru");
+        if (guruConflict) {
+          return res.status(400).json({
+            success: false,
+            message: `Jadwal bentrok dengan jadwal guru yang sudah ada`,
+            conflictWith: "guru",
+          });
+        }
+      }
+
+      const updatedJadwal = await Jadwal.findByIdAndUpdate(
+        jadwalId,
+        {
+          kelas: kelas || jadwal.kelas,
+          mataPelajaran: mataPelajaran || jadwal.mataPelajaran,
+          guru: guru || jadwal.guru,
+          hari: hari || jadwal.hari,
+          jamMulai: jamMulai || jadwal.jamMulai,
+          jamSelesai: jamSelesai || jadwal.jamSelesai,
+          semester: semester || jadwal.semester,
+          tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
+          isActive: isActive !== undefined ? isActive : jadwal.isActive,
+        },
+        { new: true, runValidators: true }
+      )
+        .populate("kelas", "nama tingkat jurusan")
+        .populate("mataPelajaran", "nama kode")
+        .populate("guru", "name identifier");
+
+      res.json({
+        success: true,
+        message: "Jadwal berhasil diupdate.",
+        data: updatedJadwal,
+      });
+    } catch (error) {
+      console.error("Error updating jadwal:", error);
+      res.status(500).json({
         success: false,
-        message: "Jadwal sudah nonaktif.",
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
       });
     }
+  },
+];
 
-    jadwal.isActive = false;
-    await jadwal.save();
+exports.deleteJadwal = [
+  logActivity(
+    "DELETE_JADWAL",
+    (req) => `Menonaktifkan (soft delete) jadwal ID: ${req.params.id}.`
+  ),
+  async (req, res) => {
+    try {
+      const jadwal = await Jadwal.findById(req.params.id);
 
-    res.json({
-      success: true,
-      message:
-        "Jadwal berhasil dinonaktifkan. Data masih dapat dipulihkan jika diperlukan.",
-    });
-  } catch (error) {
-    console.error("Error soft deleting jadwal:", error);
-    res.status(500).json({
-      success: false,
-      message: "Terjadi kesalahan pada server.",
-      error: error.message,
-    });
-  }
-};
+      if (!jadwal) {
+        return res.status(404).json({
+          success: false,
+          message: "Jadwal tidak ditemukan.",
+        });
+      }
 
-/**
- * Force Delete Jadwal - Hapus permanen dengan validasi
- */
+      if (!jadwal.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: "Jadwal sudah nonaktif.",
+        });
+      }
+
+      jadwal.isActive = false;
+      await jadwal.save();
+
+      res.json({
+        success: true,
+        message:
+          "Jadwal berhasil dinonaktifkan. Data masih dapat dipulihkan jika diperlukan.",
+      });
+    } catch (error) {
+      console.error("Error soft deleting jadwal:", error);
+      res.status(500).json({
+        success: false,
+        message: "Terjadi kesalahan pada server.",
+        error: error.message,
+      });
+    }
+  },
+];
+
 exports.forceDeleteJadwal = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -2351,7 +2484,6 @@ exports.forceDeleteJadwal = async (req, res) => {
       });
     }
 
-    // Hitung semua relasi data
     const [
       jumlahAbsensi,
       jumlahSesiPresensi,
@@ -2379,7 +2511,6 @@ exports.forceDeleteJadwal = async (req, res) => {
       0
     );
 
-    // Jika ada data terkait dan belum konfirmasi, berikan warning
     if (totalRelasi > 0 && req.query.confirm !== "yes") {
       await session.abortTransaction();
       return res.status(400).json({
@@ -2399,9 +2530,7 @@ exports.forceDeleteJadwal = async (req, res) => {
       });
     }
 
-    // Jika tidak ada data terkait atau sudah konfirmasi, hapus permanen
     if (totalRelasi === 0 || req.query.confirm === "yes") {
-      // Hapus data terkait
       await Promise.all([
         Absensi.deleteMany({ jadwal: jadwalId }, { session }),
         SesiPresensi.deleteMany({ jadwal: jadwalId }, { session }),
@@ -2410,7 +2539,6 @@ exports.forceDeleteJadwal = async (req, res) => {
         Materi.deleteMany({ jadwal: jadwalId }, { session }),
       ]);
 
-      // Hapus jadwal
       await Jadwal.findByIdAndDelete(jadwalId).session(session);
 
       await session.commitTransaction();
@@ -2434,9 +2562,6 @@ exports.forceDeleteJadwal = async (req, res) => {
   }
 };
 
-/**
- * Restore Jadwal - Aktifkan kembali jadwal yang di-soft delete
- */
 exports.restoreJadwal = async (req, res) => {
   try {
     const jadwal = await Jadwal.findById(req.params.id)
@@ -2458,7 +2583,6 @@ exports.restoreJadwal = async (req, res) => {
       });
     }
 
-    // Validasi: Pastikan semua komponen masih aktif
     const validationErrors = [];
 
     if (!jadwal.kelas.isActive) {
@@ -2481,7 +2605,6 @@ exports.restoreJadwal = async (req, res) => {
       });
     }
 
-    // Cek bentrok jadwal saat restore
     const parseTime = (time) => {
       const [hours, minutes] = time.split(":").map(Number);
       return hours * 60 + minutes;
@@ -2526,7 +2649,6 @@ exports.restoreJadwal = async (req, res) => {
       }
     }
 
-    // Restore jadwal
     jadwal.isActive = true;
     await jadwal.save();
 
@@ -2545,9 +2667,6 @@ exports.restoreJadwal = async (req, res) => {
   }
 };
 
-/**
- * @summary Get All Jadwal with Pagination and Advanced Filtering
- */
 exports.getAllJadwal = async (req, res) => {
   try {
     const {
