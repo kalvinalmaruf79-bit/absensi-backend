@@ -16,10 +16,7 @@ const ExcelJS = require("exceljs");
 const fs = require("fs");
 const logActivity = require("../middleware/activityLogger");
 
-// ============= DASHBOARD (FUNGSI BARU YANG DIPERBARUI) =============
-/**
- * @summary Get Dynamic Dashboard Statistics for Super Admin
- */
+// ============= DASHBOARD =============
 exports.getDashboard = async (req, res) => {
   try {
     const sevenDaysAgo = new Date();
@@ -27,32 +24,20 @@ exports.getDashboard = async (req, res) => {
     sevenDaysAgo.setHours(0, 0, 0, 0);
 
     const [
-      // 1. Statistik Utama
       totalGuru,
       totalSiswa,
       totalMataPelajaran,
       totalKelas,
-
-      // 2. Aktivitas Pengguna 7 Hari Terakhir
       userActivity,
-
-      // 3. Distribusi Kelas per Tingkat
       distribusiKelas,
-
-      // 4. Tren Absensi Mingguan
       trenAbsensi,
-
-      // 5. Statistik Konten (Tugas & Materi)
       kontenDibuat,
-
-      // 6. Rasio Kehadiran Siswa
       rasioKehadiran,
     ] = await Promise.all([
       User.countDocuments({ role: "guru", isActive: true }),
       User.countDocuments({ role: "siswa", isActive: true }),
       MataPelajaran.countDocuments({ isActive: true }),
       Kelas.countDocuments({ isActive: true }),
-
       ActivityLog.aggregate([
         { $match: { createdAt: { $gte: sevenDaysAgo } } },
         {
@@ -80,23 +65,18 @@ exports.getDashboard = async (req, res) => {
           $group: {
             _id: "$_id.date",
             activities: {
-              $push: {
-                role: "$_id.role",
-                count: "$count",
-              },
+              $push: { role: "$_id.role", count: "$count" },
             },
           },
         },
         { $sort: { _id: 1 } },
       ]),
-
       Kelas.aggregate([
         { $match: { isActive: true } },
         { $group: { _id: "$tingkat", count: { $sum: 1 } } },
         { $project: { tingkat: "$_id", count: 1, _id: 0 } },
         { $sort: { tingkat: 1 } },
       ]),
-
       Absensi.aggregate([
         { $match: { createdAt: { $gte: sevenDaysAgo } } },
         {
@@ -113,12 +93,7 @@ exports.getDashboard = async (req, res) => {
         {
           $group: {
             _id: "$_id.date",
-            rekap: {
-              $push: {
-                k: "$_id.keterangan",
-                v: "$count",
-              },
-            },
+            rekap: { $push: { k: "$_id.keterangan", v: "$count" } },
           },
         },
         {
@@ -130,19 +105,16 @@ exports.getDashboard = async (req, res) => {
         },
         { $sort: { date: 1 } },
       ]),
-
       Promise.all([
         Tugas.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
         Materi.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
       ]).then(([tugas, materi]) => ({ tugas, materi })),
-
       Absensi.aggregate([
         { $group: { _id: "$keterangan", count: { $sum: 1 } } },
         { $project: { status: "$_id", count: 1, _id: 0 } },
       ]),
     ]);
 
-    // Format data rasio kehadiran untuk chart (misal: pie chart)
     const formatRasio = rasioKehadiran.reduce((acc, item) => {
       acc[item.status] = item.count;
       return acc;
@@ -154,7 +126,7 @@ exports.getDashboard = async (req, res) => {
         utama: {
           totalGuru,
           totalSiswa,
-          totalPengguna: totalGuru + totalSiswa + 1, // +1 untuk super admin
+          totalPengguna: totalGuru + totalSiswa + 1,
           totalMataPelajaran,
           totalKelas,
         },
@@ -178,6 +150,122 @@ exports.getDashboard = async (req, res) => {
     });
   }
 };
+
+// ============= USER MANAGEMENT (DIPERBARUI DENGAN LOGIC PASSWORD) =============
+exports.createSiswa = [
+  logActivity(
+    "CREATE_SISWA",
+    (req) =>
+      `Membuat pengguna siswa baru: ${req.body.name} (${req.body.identifier}).`
+  ),
+  async (req, res) => {
+    try {
+      const { name, email, identifier, kelas, password } = req.body;
+
+      // PERBAIKAN: Validasi password dihapus dari sini
+      if (!name || !email || !identifier || !kelas) {
+        return res.status(400).json({
+          message: "Nama, email, identifier, dan kelas wajib diisi.",
+        });
+      }
+
+      const existing = await User.findOne({ $or: [{ email }, { identifier }] });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Email atau NIS sudah digunakan." });
+      }
+
+      const kelasData = await Kelas.findById(kelas);
+      if (!kelasData) {
+        return res.status(400).json({ message: "Kelas tidak ditemukan." });
+      }
+
+      // PERBAIKAN: Logika password opsional
+      const passwordToHash = password || identifier;
+      const isPasswordDefault = !password;
+      const hashedPassword = await bcrypt.hash(passwordToHash, 10);
+
+      const newSiswa = new User({
+        name,
+        email,
+        identifier,
+        password: hashedPassword,
+        kelas,
+        role: "siswa",
+        isPasswordDefault, // Set status password default
+      });
+      await newSiswa.save();
+
+      await Kelas.findByIdAndUpdate(kelas, {
+        $addToSet: { siswa: newSiswa._id },
+      });
+
+      const siswaResponse = await User.findById(newSiswa._id)
+        .populate("kelas", "nama tingkat jurusan")
+        .select("-password");
+
+      res
+        .status(201)
+        .json({ message: "Siswa berhasil dibuat.", siswa: siswaResponse });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    }
+  },
+];
+
+exports.createGuru = [
+  logActivity(
+    "CREATE_GURU",
+    (req) =>
+      `Membuat pengguna guru baru: ${req.body.name} (${req.body.identifier}).`
+  ),
+  async (req, res) => {
+    try {
+      // PERBAIKAN: Ambil password dari body
+      const { name, email, identifier, password } = req.body;
+      if (!name || !email || !identifier) {
+        return res
+          .status(400)
+          .json({ message: "Nama, email, dan NIP wajib diisi." });
+      }
+
+      const existing = await User.findOne({ $or: [{ email }, { identifier }] });
+      if (existing) {
+        return res
+          .status(400)
+          .json({ message: "Email atau NIP sudah digunakan." });
+      }
+
+      // PERBAIKAN: Logika password opsional
+      const passwordToHash = password || identifier;
+      const isPasswordDefault = !password;
+      const hashedPassword = await bcrypt.hash(passwordToHash, 10);
+
+      const newGuru = new User({
+        name,
+        email,
+        identifier,
+        password: hashedPassword,
+        role: "guru",
+        isPasswordDefault,
+      });
+      await newGuru.save();
+
+      const guruResponse = await User.findById(newGuru._id).select("-password");
+
+      res
+        .status(201)
+        .json({ message: "Guru berhasil dibuat.", guru: guruResponse });
+    } catch (error) {
+      res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    }
+  },
+];
+
+// ... Sisa file superAdminController.js tetap sama ...
+// (Saya tidak akan menempelkan ulang sisa kodenya untuk keringkasan,
+// karena tidak ada perubahan di fungsi lainnya)
 
 // ============= ACADEMIC CYCLE MANAGEMENT (BARU & DIPERBARUI) =============
 /**
@@ -814,105 +902,6 @@ exports.importUsers = [
         message: "Terjadi kesalahan saat memproses file Excel.",
         error: error.message,
       });
-    }
-  },
-];
-
-exports.createSiswa = [
-  logActivity(
-    "CREATE_SISWA",
-    (req) =>
-      `Membuat pengguna siswa baru: ${req.body.name} (${req.body.identifier}).`
-  ),
-  async (req, res) => {
-    try {
-      const { name, email, identifier, kelas, password } = req.body;
-
-      if (!name || !email || !identifier || !kelas || !password) {
-        return res.status(400).json({ message: "Semua field wajib diisi." });
-      }
-
-      const existing = await User.findOne({ $or: [{ email }, { identifier }] });
-      if (existing) {
-        return res
-          .status(400)
-          .json({ message: "Email atau NIS sudah digunakan." });
-      }
-
-      const kelasData = await Kelas.findById(kelas);
-      if (!kelasData) {
-        return res.status(400).json({ message: "Kelas tidak ditemukan." });
-      }
-
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const newSiswa = new User({
-        name,
-        email,
-        identifier,
-        password: hashedPassword,
-        kelas,
-        role: "siswa",
-        isPasswordDefault: false,
-      });
-      await newSiswa.save();
-
-      await Kelas.findByIdAndUpdate(kelas, {
-        $addToSet: { siswa: newSiswa._id },
-      });
-
-      const siswaResponse = await User.findById(newSiswa._id)
-        .populate("kelas", "nama tingkat jurusan")
-        .select("-password");
-
-      res
-        .status(201)
-        .json({ message: "Siswa berhasil dibuat.", siswa: siswaResponse });
-    } catch (error) {
-      res.status(500).json({ message: "Terjadi kesalahan pada server." });
-    }
-  },
-];
-
-exports.createGuru = [
-  logActivity(
-    "CREATE_GURU",
-    (req) =>
-      `Membuat pengguna guru baru: ${req.body.name} (${req.body.identifier}).`
-  ),
-  async (req, res) => {
-    try {
-      const { name, email, identifier } = req.body;
-      if (!name || !email || !identifier) {
-        return res
-          .status(400)
-          .json({ message: "Nama, email, dan NIP wajib diisi." });
-      }
-
-      const existing = await User.findOne({ $or: [{ email }, { identifier }] });
-      if (existing) {
-        return res
-          .status(400)
-          .json({ message: "Email atau NIP sudah digunakan." });
-      }
-
-      const hashedPassword = await bcrypt.hash(identifier, 10);
-      const newGuru = new User({
-        name,
-        email,
-        identifier,
-        password: hashedPassword,
-        role: "guru",
-        isPasswordDefault: true,
-      });
-      await newGuru.save();
-
-      const guruResponse = await User.findById(newGuru._id).select("-password");
-
-      res
-        .status(201)
-        .json({ message: "Guru berhasil dibuat.", guru: guruResponse });
-    } catch (error) {
-      res.status(500).json({ message: "Terjadi kesalahan pada server." });
     }
   },
 ];
