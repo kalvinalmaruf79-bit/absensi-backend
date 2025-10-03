@@ -1865,7 +1865,100 @@ exports.getKelasStats = async (req, res) => {
   }
 };
 
-// ============= JADWAL MANAGEMENT =============
+// ============= JADWAL MANAGEMENT (ENHANCED) =============
+
+/**
+ * Get Jadwal Stats - Info detail sebelum delete
+ */
+exports.getJadwalStats = async (req, res) => {
+  try {
+    const jadwalId = req.params.id;
+    const jadwal = await Jadwal.findById(jadwalId)
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name identifier");
+
+    if (!jadwal) {
+      return res.status(404).json({
+        success: false,
+        message: "Jadwal tidak ditemukan.",
+      });
+    }
+
+    // Hitung data terkait
+    const [
+      jumlahAbsensi,
+      jumlahSesiPresensi,
+      jumlahNilai,
+      jumlahTugas,
+      jumlahMateri,
+    ] = await Promise.all([
+      Absensi.countDocuments({
+        jadwal: jadwalId,
+      }),
+      SesiPresensi.countDocuments({
+        jadwal: jadwalId,
+      }),
+      Nilai.countDocuments({
+        jadwal: jadwalId,
+      }),
+      Tugas.countDocuments({
+        jadwal: jadwalId,
+      }),
+      Materi.countDocuments({
+        jadwal: jadwalId,
+      }),
+    ]);
+
+    const dataRelasi = {
+      absensi: jumlahAbsensi,
+      sesiPresensi: jumlahSesiPresensi,
+      nilai: jumlahNilai,
+      tugas: jumlahTugas,
+      materi: jumlahMateri,
+    };
+
+    const totalRelasi = Object.values(dataRelasi).reduce(
+      (sum, val) => sum + val,
+      0
+    );
+
+    res.json({
+      success: true,
+      jadwal: {
+        _id: jadwal._id,
+        kelas: jadwal.kelas,
+        mataPelajaran: jadwal.mataPelajaran,
+        guru: jadwal.guru,
+        hari: jadwal.hari,
+        jamMulai: jadwal.jamMulai,
+        jamSelesai: jadwal.jamSelesai,
+        semester: jadwal.semester,
+        tahunAjaran: jadwal.tahunAjaran,
+        isActive: jadwal.isActive,
+      },
+      stats: dataRelasi,
+      totalRelasi,
+      canSafeDelete: totalRelasi === 0,
+      recommendation:
+        totalRelasi === 0
+          ? "Aman untuk dihapus permanen"
+          : `Jadwal memiliki ${totalRelasi} data terkait. Disarankan menggunakan soft delete atau hapus data terkait terlebih dahulu`,
+    });
+  } catch (error) {
+    console.error("Error getting jadwal stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Create Jadwal with Enhanced Time Validation
+ * Mendukung jadwal berurutan seperti 12:35-13:10, 13:10-14:00
+ */
 exports.createJadwal = async (req, res) => {
   try {
     const {
@@ -1878,6 +1971,8 @@ exports.createJadwal = async (req, res) => {
       semester,
       tahunAjaran,
     } = req.body;
+
+    // Validasi field wajib
     if (
       !kelas ||
       !mataPelajaran ||
@@ -1888,48 +1983,147 @@ exports.createJadwal = async (req, res) => {
       !semester ||
       !tahunAjaran
     ) {
-      return res
-        .status(400)
-        .json({ message: "Semua field jadwal wajib diisi." });
-    }
-
-    const guruData = await User.findOne({ _id: guru, role: "guru" });
-    if (!guruData) {
-      return res.status(404).json({ message: "Guru tidak ditemukan." });
-    }
-    if (!guruData.mataPelajaran.includes(mataPelajaran)) {
-      return res
-        .status(400)
-        .json({ message: "Guru tidak mengampu mata pelajaran ini." });
-    }
-
-    const conflict = await Jadwal.findOne({
-      $or: [
-        {
-          kelas,
-          hari,
-          tahunAjaran,
-          semester,
-          jamMulai: { $lt: jamSelesai },
-          jamSelesai: { $gt: jamMulai },
-        },
-        {
-          guru,
-          hari,
-          tahunAjaran,
-          semester,
-          jamMulai: { $lt: jamSelesai },
-          jamSelesai: { $gt: jamMulai },
-        },
-      ],
-    });
-    if (conflict) {
       return res.status(400).json({
-        message:
-          "Jadwal bentrok dengan jadwal yang sudah ada untuk kelas atau guru.",
+        success: false,
+        message: "Semua field jadwal wajib diisi.",
       });
     }
 
+    // Validasi format waktu (HH:MM)
+    const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
+    if (!timeRegex.test(jamMulai) || !timeRegex.test(jamSelesai)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Format waktu tidak valid. Gunakan format HH:MM (contoh: 07:00, 13:45)",
+      });
+    }
+
+    // Konversi waktu ke menit untuk perbandingan
+    const parseTime = (time) => {
+      const [hours, minutes] = time.split(":").map(Number);
+      return hours * 60 + minutes;
+    };
+
+    const startMinutes = parseTime(jamMulai);
+    const endMinutes = parseTime(jamSelesai);
+
+    // Validasi: jam selesai harus lebih besar dari jam mulai
+    if (endMinutes <= startMinutes) {
+      return res.status(400).json({
+        success: false,
+        message: "Jam selesai harus lebih besar dari jam mulai.",
+      });
+    }
+
+    // Validasi guru
+    const guruData = await User.findOne({
+      _id: guru,
+      role: "guru",
+      isActive: true,
+    });
+    if (!guruData) {
+      return res.status(404).json({
+        success: false,
+        message: "Guru tidak ditemukan atau tidak aktif.",
+      });
+    }
+
+    // Validasi: Guru harus mengampu mata pelajaran ini
+    if (!guruData.mataPelajaran.includes(mataPelajaran)) {
+      return res.status(400).json({
+        success: false,
+        message: "Guru tidak mengampu mata pelajaran ini.",
+      });
+    }
+
+    // Validasi: Kelas aktif
+    const kelasData = await Kelas.findOne({ _id: kelas, isActive: true });
+    if (!kelasData) {
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan atau tidak aktif.",
+      });
+    }
+
+    // Validasi: Mata pelajaran aktif
+    const mapelData = await MataPelajaran.findOne({
+      _id: mataPelajaran,
+      isActive: true,
+    });
+    if (!mapelData) {
+      return res.status(404).json({
+        success: false,
+        message: "Mata pelajaran tidak ditemukan atau tidak aktif.",
+      });
+    }
+
+    // CEK BENTROK JADWAL dengan logika yang lebih fleksibel
+    // Dua jadwal bentrok jika:
+    // 1. Jam mulai jadwal baru berada di antara jadwal existing (startA < startB < endA)
+    // 2. Jam selesai jadwal baru berada di antara jadwal existing (startA < endB < endA)
+    // 3. Jadwal baru mencakup jadwal existing (startB <= startA && endB >= endA)
+
+    // PERUBAHAN: Jadwal yang berurutan (contiguous) DIPERBOLEHKAN
+    // Misalnya: 12:35-13:10 dan 13:10-14:00 tidak dianggap bentrok
+
+    const checkConflict = async (targetId, targetField) => {
+      const existingJadwal = await Jadwal.find({
+        [targetField]: targetId,
+        hari,
+        tahunAjaran,
+        semester,
+        isActive: true,
+      });
+
+      for (const existing of existingJadwal) {
+        const existingStart = parseTime(existing.jamMulai);
+        const existingEnd = parseTime(existing.jamSelesai);
+
+        // Bentrok terjadi jika ada overlap EXCLUDING edges (berurutan diperbolehkan)
+        const hasOverlap =
+          startMinutes < existingEnd &&
+          endMinutes > existingStart && // Ada overlap
+          !(startMinutes === existingEnd || endMinutes === existingStart); // TAPI bukan berurutan
+
+        if (hasOverlap) {
+          return existing;
+        }
+      }
+      return null;
+    };
+
+    // Cek bentrok untuk kelas
+    const kelasConflict = await checkConflict(kelas, "kelas");
+    if (kelasConflict) {
+      return res.status(400).json({
+        success: false,
+        message: `Jadwal bentrok dengan jadwal kelas yang sudah ada pada ${hari} jam ${kelasConflict.jamMulai}-${kelasConflict.jamSelesai}`,
+        conflictWith: "kelas",
+        existingJadwal: {
+          id: kelasConflict._id,
+          jamMulai: kelasConflict.jamMulai,
+          jamSelesai: kelasConflict.jamSelesai,
+        },
+      });
+    }
+
+    // Cek bentrok untuk guru
+    const guruConflict = await checkConflict(guru, "guru");
+    if (guruConflict) {
+      return res.status(400).json({
+        success: false,
+        message: `Jadwal bentrok dengan jadwal guru yang sudah ada pada ${hari} jam ${guruConflict.jamMulai}-${guruConflict.jamSelesai}`,
+        conflictWith: "guru",
+        existingJadwal: {
+          id: guruConflict._id,
+          jamMulai: guruConflict.jamMulai,
+          jamSelesai: guruConflict.jamSelesai,
+        },
+      });
+    }
+
+    // Buat jadwal baru
     const jadwal = new Jadwal({
       kelas,
       mataPelajaran,
@@ -1941,6 +2135,7 @@ exports.createJadwal = async (req, res) => {
       tahunAjaran,
       createdBy: req.user.id,
     });
+
     await jadwal.save();
 
     const jadwalResponse = await Jadwal.findById(jadwal._id)
@@ -1948,11 +2143,405 @@ exports.createJadwal = async (req, res) => {
       .populate("mataPelajaran", "nama kode")
       .populate("guru", "name identifier");
 
-    res
-      .status(201)
-      .json({ message: "Jadwal berhasil dibuat.", jadwal: jadwalResponse });
+    res.status(201).json({
+      success: true,
+      message: "Jadwal berhasil dibuat.",
+      data: jadwalResponse,
+    });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error creating jadwal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Update Jadwal with Same Enhanced Validation
+ */
+exports.updateJadwal = async (req, res) => {
+  try {
+    const jadwalId = req.params.id;
+    const {
+      kelas,
+      mataPelajaran,
+      guru,
+      hari,
+      jamMulai,
+      jamSelesai,
+      semester,
+      tahunAjaran,
+      isActive,
+    } = req.body;
+
+    const jadwal = await Jadwal.findById(jadwalId);
+    if (!jadwal) {
+      return res.status(404).json({
+        success: false,
+        message: "Jadwal tidak ditemukan.",
+      });
+    }
+
+    // Validasi format waktu jika diubah
+    if (jamMulai || jamSelesai) {
+      const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
+      const newJamMulai = jamMulai || jadwal.jamMulai;
+      const newJamSelesai = jamSelesai || jadwal.jamSelesai;
+
+      if (!timeRegex.test(newJamMulai) || !timeRegex.test(newJamSelesai)) {
+        return res.status(400).json({
+          success: false,
+          message: "Format waktu tidak valid. Gunakan format HH:MM",
+        });
+      }
+
+      const parseTime = (time) => {
+        const [hours, minutes] = time.split(":").map(Number);
+        return hours * 60 + minutes;
+      };
+
+      const startMinutes = parseTime(newJamMulai);
+      const endMinutes = parseTime(newJamSelesai);
+
+      if (endMinutes <= startMinutes) {
+        return res.status(400).json({
+          success: false,
+          message: "Jam selesai harus lebih besar dari jam mulai.",
+        });
+      }
+
+      // Cek bentrok dengan jadwal lain (exclude jadwal yang sedang diupdate)
+      const checkConflict = async (targetId, targetField) => {
+        const existingJadwal = await Jadwal.find({
+          _id: { $ne: jadwalId }, // Exclude jadwal ini
+          [targetField]: targetId,
+          hari: hari || jadwal.hari,
+          tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
+          semester: semester || jadwal.semester,
+          isActive: true,
+        });
+
+        for (const existing of existingJadwal) {
+          const existingStart = parseTime(existing.jamMulai);
+          const existingEnd = parseTime(existing.jamSelesai);
+
+          const hasOverlap =
+            startMinutes < existingEnd &&
+            endMinutes > existingStart &&
+            !(startMinutes === existingEnd || endMinutes === existingStart);
+
+          if (hasOverlap) {
+            return existing;
+          }
+        }
+        return null;
+      };
+
+      const kelasConflict = await checkConflict(kelas || jadwal.kelas, "kelas");
+      if (kelasConflict) {
+        return res.status(400).json({
+          success: false,
+          message: `Jadwal bentrok dengan jadwal kelas yang sudah ada`,
+          conflictWith: "kelas",
+        });
+      }
+
+      const guruConflict = await checkConflict(guru || jadwal.guru, "guru");
+      if (guruConflict) {
+        return res.status(400).json({
+          success: false,
+          message: `Jadwal bentrok dengan jadwal guru yang sudah ada`,
+          conflictWith: "guru",
+        });
+      }
+    }
+
+    // Update jadwal
+    const updatedJadwal = await Jadwal.findByIdAndUpdate(
+      jadwalId,
+      {
+        kelas: kelas || jadwal.kelas,
+        mataPelajaran: mataPelajaran || jadwal.mataPelajaran,
+        guru: guru || jadwal.guru,
+        hari: hari || jadwal.hari,
+        jamMulai: jamMulai || jadwal.jamMulai,
+        jamSelesai: jamSelesai || jadwal.jamSelesai,
+        semester: semester || jadwal.semester,
+        tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
+        isActive: isActive !== undefined ? isActive : jadwal.isActive,
+      },
+      { new: true, runValidators: true }
+    )
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name identifier");
+
+    res.json({
+      success: true,
+      message: "Jadwal berhasil diupdate.",
+      data: updatedJadwal,
+    });
+  } catch (error) {
+    console.error("Error updating jadwal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Soft Delete Jadwal - Nonaktifkan jadwal
+ */
+exports.deleteJadwal = async (req, res) => {
+  try {
+    const jadwal = await Jadwal.findById(req.params.id);
+
+    if (!jadwal) {
+      return res.status(404).json({
+        success: false,
+        message: "Jadwal tidak ditemukan.",
+      });
+    }
+
+    if (!jadwal.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Jadwal sudah nonaktif.",
+      });
+    }
+
+    jadwal.isActive = false;
+    await jadwal.save();
+
+    res.json({
+      success: true,
+      message:
+        "Jadwal berhasil dinonaktifkan. Data masih dapat dipulihkan jika diperlukan.",
+    });
+  } catch (error) {
+    console.error("Error soft deleting jadwal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Force Delete Jadwal - Hapus permanen dengan validasi
+ */
+exports.forceDeleteJadwal = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const jadwalId = req.params.id;
+    const jadwal = await Jadwal.findById(jadwalId).session(session);
+
+    if (!jadwal) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: "Jadwal tidak ditemukan.",
+      });
+    }
+
+    // Hitung semua relasi data
+    const [
+      jumlahAbsensi,
+      jumlahSesiPresensi,
+      jumlahNilai,
+      jumlahTugas,
+      jumlahMateri,
+    ] = await Promise.all([
+      Absensi.countDocuments({ jadwal: jadwalId }).session(session),
+      SesiPresensi.countDocuments({ jadwal: jadwalId }).session(session),
+      Nilai.countDocuments({ jadwal: jadwalId }).session(session),
+      Tugas.countDocuments({ jadwal: jadwalId }).session(session),
+      Materi.countDocuments({ jadwal: jadwalId }).session(session),
+    ]);
+
+    const dataRelasi = {
+      absensi: jumlahAbsensi,
+      sesiPresensi: jumlahSesiPresensi,
+      nilai: jumlahNilai,
+      tugas: jumlahTugas,
+      materi: jumlahMateri,
+    };
+
+    const totalRelasi = Object.values(dataRelasi).reduce(
+      (sum, val) => sum + val,
+      0
+    );
+
+    // Jika ada data terkait dan belum konfirmasi, berikan warning
+    if (totalRelasi > 0 && req.query.confirm !== "yes") {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Jadwal ini memiliki ${totalRelasi} data terkait yang akan terhapus permanen!`,
+        warning: "PERHATIAN: Penghapusan permanen tidak dapat dibatalkan!",
+        dataRelasi,
+        totalRelasi,
+        actions: {
+          confirmDelete: {
+            method: "DELETE",
+            url: `/super-admin/jadwal/${jadwalId}/force?confirm=yes`,
+            warning: "Akan menghapus SEMUA data terkait secara permanen",
+          },
+          alternative: "Gunakan soft delete untuk tetap menyimpan data history",
+        },
+      });
+    }
+
+    // Jika tidak ada data terkait atau sudah konfirmasi, hapus permanen
+    if (totalRelasi === 0 || req.query.confirm === "yes") {
+      // Hapus data terkait
+      await Promise.all([
+        Absensi.deleteMany({ jadwal: jadwalId }, { session }),
+        SesiPresensi.deleteMany({ jadwal: jadwalId }, { session }),
+        Nilai.deleteMany({ jadwal: jadwalId }, { session }),
+        Tugas.deleteMany({ jadwal: jadwalId }, { session }),
+        Materi.deleteMany({ jadwal: jadwalId }, { session }),
+      ]);
+
+      // Hapus jadwal
+      await Jadwal.findByIdAndDelete(jadwalId).session(session);
+
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message: "Jadwal dan semua data terkait berhasil dihapus permanen.",
+        deletedData: dataRelasi,
+      });
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Error force deleting jadwal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+/**
+ * Restore Jadwal - Aktifkan kembali jadwal yang di-soft delete
+ */
+exports.restoreJadwal = async (req, res) => {
+  try {
+    const jadwal = await Jadwal.findById(req.params.id)
+      .populate("kelas", "nama isActive")
+      .populate("mataPelajaran", "nama isActive")
+      .populate("guru", "name isActive");
+
+    if (!jadwal) {
+      return res.status(404).json({
+        success: false,
+        message: "Jadwal tidak ditemukan.",
+      });
+    }
+
+    if (jadwal.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: "Jadwal sudah aktif.",
+      });
+    }
+
+    // Validasi: Pastikan semua komponen masih aktif
+    const validationErrors = [];
+
+    if (!jadwal.kelas.isActive) {
+      validationErrors.push("Kelas tidak aktif");
+    }
+    if (!jadwal.mataPelajaran.isActive) {
+      validationErrors.push("Mata pelajaran tidak aktif");
+    }
+    if (!jadwal.guru.isActive) {
+      validationErrors.push("Guru tidak aktif");
+    }
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Tidak dapat mengaktifkan jadwal.",
+        errors: validationErrors,
+        recommendation:
+          "Aktifkan kembali komponen yang nonaktif terlebih dahulu atau update jadwal.",
+      });
+    }
+
+    // Cek bentrok jadwal saat restore
+    const parseTime = (time) => {
+      const [hours, minutes] = time.split(":").map(Number);
+      return hours * 60 + minutes;
+    };
+
+    const startMinutes = parseTime(jadwal.jamMulai);
+    const endMinutes = parseTime(jadwal.jamSelesai);
+
+    const existingJadwal = await Jadwal.find({
+      _id: { $ne: jadwal._id },
+      hari: jadwal.hari,
+      tahunAjaran: jadwal.tahunAjaran,
+      semester: jadwal.semester,
+      isActive: true,
+      $or: [{ kelas: jadwal.kelas._id }, { guru: jadwal.guru._id }],
+    });
+
+    for (const existing of existingJadwal) {
+      const existingStart = parseTime(existing.jamMulai);
+      const existingEnd = parseTime(existing.jamSelesai);
+
+      const hasOverlap =
+        startMinutes < existingEnd &&
+        endMinutes > existingStart &&
+        !(startMinutes === existingEnd || endMinutes === existingStart);
+
+      if (hasOverlap) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Tidak dapat mengaktifkan jadwal karena bentrok dengan jadwal yang sudah ada.",
+          conflictWith: existing.kelas.equals(jadwal.kelas._id)
+            ? "kelas"
+            : "guru",
+          existingJadwal: {
+            id: existing._id,
+            hari: existing.hari,
+            jamMulai: existing.jamMulai,
+            jamSelesai: existing.jamSelesai,
+          },
+        });
+      }
+    }
+
+    // Restore jadwal
+    jadwal.isActive = true;
+    await jadwal.save();
+
+    res.json({
+      success: true,
+      message: "Jadwal berhasil diaktifkan kembali.",
+      data: jadwal,
+    });
+  } catch (error) {
+    console.error("Error restoring jadwal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
@@ -1997,37 +2586,11 @@ exports.getAllJadwal = async (req, res) => {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
-exports.updateJadwal = async (req, res) => {
-  try {
-    const jadwal = await Jadwal.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-    })
-      .populate("kelas", "nama tingkat jurusan")
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name identifier");
-    if (!jadwal) {
-      return res.status(404).json({ message: "Jadwal tidak ditemukan." });
-    }
-    res.json({ message: "Jadwal berhasil diupdate.", jadwal });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
-exports.deleteJadwal = async (req, res) => {
-  try {
-    const jadwal = await Jadwal.findByIdAndUpdate(req.params.id, {
-      isActive: false,
+    console.error("Error getting all jadwal:", error);
+    res.status(500).json({
+      success: false,
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
     });
-    if (!jadwal) {
-      return res.status(404).json({ message: "Jadwal tidak ditemukan." });
-    }
-    res.json({ message: "Jadwal berhasil dihapus." });
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
