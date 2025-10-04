@@ -1,10 +1,18 @@
 // src/models/Materi.js
 const mongoose = require("mongoose");
+const mongoosePaginate = require("mongoose-paginate-v2");
 
 const materiSchema = new mongoose.Schema(
   {
-    judul: { type: String, required: true },
-    deskripsi: { type: String },
+    judul: {
+      type: String,
+      required: [true, "Judul materi wajib diisi"],
+      trim: true,
+    },
+    deskripsi: {
+      type: String,
+      required: [true, "Deskripsi materi wajib diisi"],
+    },
     mataPelajaran: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "MataPelajaran",
@@ -23,23 +31,42 @@ const materiSchema = new mongoose.Schema(
     files: [
       {
         fileName: String,
-        url: String, // Menggantikan filePath
-        public_id: String, // ID unik dari Cloudinary untuk menghapus
+        url: String,
+        public_id: String,
         fileType: String,
+        uploadedAt: {
+          type: Date,
+          default: Date.now,
+        },
       },
     ],
     links: [
       {
-        title: String,
-        url: String,
+        title: {
+          type: String,
+          required: true,
+        },
+        url: {
+          type: String,
+          required: true,
+        },
       },
     ],
     isPublished: {
       type: Boolean,
-      default: true,
+      default: false,
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
+
+// Index untuk performa query
+materiSchema.index({ kelas: 1, mataPelajaran: 1, isPublished: 1 });
+materiSchema.index({ guru: 1 });
+
+// Plugin untuk pagination
+materiSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("Materi", materiSchema);
