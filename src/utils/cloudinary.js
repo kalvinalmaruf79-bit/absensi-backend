@@ -22,6 +22,10 @@ const uploadFromBuffer = (buffer, folder) => {
       {
         folder: folder,
         resource_type: "auto", // Biarkan Cloudinary mendeteksi tipe file
+        type: "upload", // PENTING: Pastikan type adalah 'upload' bukan 'private'
+        access_mode: "public", // TAMBAHAN: Set file menjadi publicly accessible
+        // Untuk keamanan ekstra, bisa tambahkan:
+        // allowed_formats: ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx"],
       },
       (error, result) => {
         if (result) {
@@ -46,13 +50,30 @@ const uploadFromBuffer = (buffer, folder) => {
  */
 const deleteFile = (public_id) => {
   return new Promise((resolve, reject) => {
-    cloudinary.uploader.destroy(public_id, (error, result) => {
-      if (result) {
-        resolve(result);
-      } else {
-        reject(error);
+    // Untuk PDF dan file non-image, perlu specify resource_type
+    // Coba delete sebagai 'raw' dulu, jika gagal coba 'image'
+    cloudinary.uploader.destroy(
+      public_id,
+      { resource_type: "raw", invalidate: true },
+      (error, result) => {
+        if (result && result.result === "ok") {
+          resolve(result);
+        } else {
+          // Fallback: coba sebagai image atau auto
+          cloudinary.uploader.destroy(
+            public_id,
+            { invalidate: true },
+            (error2, result2) => {
+              if (result2) {
+                resolve(result2);
+              } else {
+                reject(error2 || error);
+              }
+            }
+          );
+        }
       }
-    });
+    );
   });
 };
 
