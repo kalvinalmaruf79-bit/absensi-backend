@@ -154,6 +154,7 @@ exports.getSiswaKelas = async (req, res) => {
       kelas: kelasId,
       isActive: true,
     });
+
     if (!jadwal) {
       return res
         .status(403)
@@ -176,12 +177,21 @@ exports.getSiswaKelas = async (req, res) => {
       limit: parseInt(limit, 10),
       select: "-password",
       sort: { name: 1 },
+      // PENTING: Populate kelas dengan semua field yang dibutuhkan
+      populate: {
+        path: "kelas",
+        select: "nama tingkat jurusan",
+      },
     };
 
     const result = await User.paginate(query, options);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error getSiswaKelas:", error);
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 
