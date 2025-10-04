@@ -599,12 +599,26 @@ exports.restoreUser = async (req, res) => {
 exports.getPromotionRecommendation = async (req, res) => {
   try {
     const { kelasId, tahunAjaran } = req.query;
+
     if (!kelasId || !tahunAjaran) {
       return res.status(400).json({
+        success: false,
         message: "Parameter 'kelasId' dan 'tahunAjaran' wajib diisi.",
       });
     }
 
+    // PERBAIKAN: Validasi semester genap
+    const settings = await Settings.getSettings();
+    if (settings.semesterAktif !== "genap") {
+      return res.status(400).json({
+        success: false,
+        message: "Kenaikan kelas hanya dapat dilakukan di akhir semester genap",
+        currentSemester: settings.semesterAktif,
+        tahunAjaranAktif: settings.tahunAjaranAktif,
+      });
+    }
+
+    // Ambil aturan akademik
     const rules = await AcademicRules.getRules();
     const {
       minAttendancePercentage,
@@ -612,6 +626,20 @@ exports.getPromotionRecommendation = async (req, res) => {
       passingGrade,
     } = rules.promotion;
 
+    // Ambil data kelas
+    const kelas = await Kelas.findById(kelasId).populate(
+      "waliKelas",
+      "name identifier"
+    );
+
+    if (!kelas) {
+      return res.status(404).json({
+        success: false,
+        message: "Kelas tidak ditemukan.",
+      });
+    }
+
+    // Ambil semua siswa aktif di kelas
     const siswaDiKelas = await User.find({
       kelas: kelasId,
       role: "siswa",
@@ -621,90 +649,203 @@ exports.getPromotionRecommendation = async (req, res) => {
     const recommendations = [];
 
     for (const siswa of siswaDiKelas) {
-      // 1. Hitung Rekap Absensi
-      const totalJadwalSetahun = await Jadwal.countDocuments({
-        kelas: kelasId,
-        tahunAjaran,
-      });
-      const totalHadir = await Absensi.countDocuments({
-        siswa: siswa._id,
-        keterangan: "hadir",
-        $expr: {
-          $eq: [
-            { $year: "$createdAt" }, // Asumsi tahun ajaran cocok dengan tahun kalender
-            parseInt(tahunAjaran.split("/")[0]),
-          ],
+      // 1. Hitung Rekap Absensi SETAHUN (ganjil + genap)
+      const absensiAggregate = await Absensi.aggregate([
+        {
+          $lookup: {
+            from: "jadwals",
+            localField: "jadwal",
+            foreignField: "_id",
+            as: "jadwalInfo",
+          },
         },
-      });
-      const attendancePercentage =
-        totalJadwalSetahun > 0
-          ? (totalHadir / (totalJadwalSetahun * 2)) * 100
-          : 100; // Asumsi 2 semester
-
-      // 2. Hitung Nilai di Bawah KKM
-      const nilaiDiBawahKKM = await Nilai.aggregate([
+        { $unwind: "$jadwalInfo" },
         {
           $match: {
             siswa: siswa._id,
-            tahunAjaran,
-            nilai: { $lt: passingGrade },
+            "jadwalInfo.kelas": kelas._id,
+            "jadwalInfo.tahunAjaran": tahunAjaran,
+            // Mencakup ganjil dan genap
           },
         },
         {
           $group: {
-            _id: "$mataPelajaran",
+            _id: "$keterangan",
+            count: { $sum: 1 },
           },
         },
-        {
-          $count: "total",
-        },
       ]);
-      const totalNilaiDiBawahKKM =
-        nilaiDiBawahKKM.length > 0 ? nilaiDiBawahKKM[0].total : 0;
+
+      const totalJadwalSetahun = await Jadwal.countDocuments({
+        kelas: kelasId,
+        tahunAjaran,
+        isActive: true,
+      });
+
+      const absensiMap = absensiAggregate.reduce((acc, item) => {
+        acc[item._id] = item.count;
+        return acc;
+      }, {});
+
+      const totalHadir = absensiMap.hadir || 0;
+      const totalSakit = absensiMap.sakit || 0;
+      const totalIzin = absensiMap.izin || 0;
+      const totalAlpa = absensiMap.alpa || 0;
+
+      // Estimasi total pertemuan (jadwal x 2 semester x perkiraan pertemuan)
+      const estimasiTotalPertemuan = totalJadwalSetahun * 30; // ~30 minggu per tahun
+      const attendancePercentage =
+        estimasiTotalPertemuan > 0
+          ? (totalHadir / estimasiTotalPertemuan) * 100
+          : 100;
+
+      // 2. Hitung Nilai di Bawah KKM SETAHUN
+      const nilaiSetahun = await Nilai.find({
+        siswa: siswa._id,
+        tahunAjaran: tahunAjaran,
+        // Ambil semua semester (ganjil + genap)
+      });
+
+      // Group by mataPelajaran, ambil rata-rata
+      const nilaiPerMapel = {};
+      nilaiSetahun.forEach((n) => {
+        const mapelId = n.mataPelajaran.toString();
+        if (!nilaiPerMapel[mapelId]) {
+          nilaiPerMapel[mapelId] = [];
+        }
+        nilaiPerMapel[mapelId].push(n.nilai);
+      });
+
+      // Hitung rata-rata per mapel
+      let mapelDiBawahKKM = 0;
+      let totalNilaiRataRata = 0;
+      const jumlahMapel = Object.keys(nilaiPerMapel).length;
+
+      Object.values(nilaiPerMapel).forEach((nilaiArray) => {
+        const rataRata =
+          nilaiArray.reduce((a, b) => a + b, 0) / nilaiArray.length;
+        totalNilaiRataRata += rataRata;
+        if (rataRata < passingGrade) {
+          mapelDiBawahKKM++;
+        }
+      });
+
+      const nilaiRataRata =
+        jumlahMapel > 0 ? totalNilaiRataRata / jumlahMapel : 0;
 
       // 3. Tentukan Rekomendasi
       let systemRecommendation = "Naik Kelas";
       const reasons = [];
+
       if (attendancePercentage < minAttendancePercentage) {
         systemRecommendation = "Tinggal Kelas";
         reasons.push(
           `Kehadiran di bawah ${minAttendancePercentage}% (hanya ${attendancePercentage.toFixed(
-            2
+            1
           )}%)`
         );
       }
-      if (totalNilaiDiBawahKKM > maxSubjectsBelowPassingGrade) {
+
+      if (mapelDiBawahKKM > maxSubjectsBelowPassingGrade) {
         systemRecommendation = "Tinggal Kelas";
         reasons.push(
-          `Memiliki ${totalNilaiDiBawahKKM} mapel di bawah KKM (batas: ${maxSubjectsBelowPassingGrade})`
+          `Memiliki ${mapelDiBawahKKM} mapel di bawah KKM (maksimal: ${maxSubjectsBelowPassingGrade})`
         );
+      }
+
+      // Untuk kelas XII, default rekomendasi adalah Lulus
+      if (kelas.tingkat === "XII" && systemRecommendation === "Naik Kelas") {
+        systemRecommendation = "Lulus";
+      }
+
+      // Tentukan kelas tujuan default
+      let recommendedKelasId = null;
+      if (systemRecommendation === "Naik Kelas") {
+        // Cari kelas tingkat selanjutnya dengan jurusan yang sama
+        const nextTingkat = kelas.tingkat === "X" ? "XI" : "XII";
+        const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
+
+        const nextKelas = await Kelas.findOne({
+          tingkat: nextTingkat,
+          jurusan: kelas.jurusan,
+          tahunAjaran: nextTahunAjaran,
+          isActive: true,
+        }).select("_id nama");
+
+        recommendedKelasId = nextKelas?._id;
+      } else if (systemRecommendation === "Tinggal Kelas") {
+        // Cari kelas yang sama untuk tahun ajaran berikutnya
+        const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
+
+        const sameKelas = await Kelas.findOne({
+          tingkat: kelas.tingkat,
+          jurusan: kelas.jurusan,
+          nama: kelas.nama,
+          tahunAjaran: nextTahunAjaran,
+          isActive: true,
+        }).select("_id nama");
+
+        recommendedKelasId = sameKelas?._id || kelas._id;
       }
 
       recommendations.push({
         siswaId: siswa._id,
-        name: siswa.name,
-        identifier: siswa.identifier,
+        nama: siswa.name,
+        nis: siswa.identifier,
         rekap: {
-          attendancePercentage: attendancePercentage.toFixed(2),
-          subjectsBelowPassingGrade: totalNilaiDiBawahKKM,
+          attendancePercentage: attendancePercentage.toFixed(1),
+          subjectsBelowPassingGrade: mapelDiBawahKKM,
+          nilaiRataRata: nilaiRataRata.toFixed(1),
+          totalHadir,
+          totalSakit,
+          totalIzin,
+          totalAlpa,
         },
         systemRecommendation,
-        reasons,
-        status: systemRecommendation, // Status awal sama dengan rekomendasi
+        recommendedKelasId,
+        reasons:
+          reasons.length > 0 ? reasons : ["Memenuhi kriteria kenaikan kelas"],
+        status: systemRecommendation,
       });
     }
 
     res.json({
-      rules: rules.promotion,
-      recommendations,
+      success: true,
+      data: {
+        kelas: {
+          _id: kelas._id,
+          nama: kelas.nama,
+          tingkat: kelas.tingkat,
+          jurusan: kelas.jurusan,
+          tahunAjaran: kelas.tahunAjaran,
+          waliKelas: kelas.waliKelas,
+        },
+        rules: rules.promotion,
+        siswa: recommendations,
+        summary: {
+          total: recommendations.length,
+          naik: recommendations.filter((r) => r.status === "Naik Kelas").length,
+          tinggal: recommendations.filter((r) => r.status === "Tinggal Kelas")
+            .length,
+          lulus: recommendations.filter((r) => r.status === "Lulus").length,
+        },
+      },
     });
   } catch (error) {
+    console.error("Error getting promotion recommendation:", error);
     res.status(500).json({
+      success: false,
       message: "Gagal mendapatkan rekomendasi kenaikan kelas.",
       error: error.message,
     });
   }
 };
+
+// Helper function untuk generate tahun ajaran berikutnya
+function generateNextTahunAjaran(currentTA) {
+  const [start, end] = currentTA.split("/").map(Number);
+  return `${start + 1}/${end + 1}`;
+}
 
 /**
  * @summary Memproses kenaikan, kelulusan, dan tinggal kelas siswa.
@@ -720,13 +861,11 @@ exports.processPromotion = [
     return `Memproses kenaikan kelas dari kelas ID ${fromKelasId} untuk T.A ${tahunAjaran}. Rincian: ${naik} naik, ${tinggal} tinggal, ${lulus} lulus.`;
   }),
   async (req, res) => {
-    const { siswaData, fromKelasId, defaultToKelasId, tahunAjaran, semester } =
-      req.body;
+    const { siswaData, fromKelasId, tahunAjaran } = req.body;
 
-    if (!siswaData || !fromKelasId || !tahunAjaran || !semester) {
+    if (!siswaData || !fromKelasId || !tahunAjaran) {
       return res.status(400).json({
-        message:
-          "Data siswa, kelas asal, tahun ajaran, dan semester wajib diisi.",
+        message: "Data siswa, kelas asal, dan tahun ajaran wajib diisi.",
       });
     }
 
@@ -734,55 +873,84 @@ exports.processPromotion = [
     session.startTransaction();
 
     try {
+      const settings = await Settings.getSettings();
+
+      // Validasi: Harus semester genap
+      if (settings.semesterAktif !== "genap") {
+        throw new Error(
+          "Kenaikan kelas hanya dapat dilakukan di semester genap"
+        );
+      }
+
       const fromKelas = await Kelas.findById(fromKelasId).session(session);
       if (!fromKelas) {
         throw new Error("Kelas asal tidak ditemukan.");
       }
 
+      // Untuk kelas XII yang lulus, siapkan tahun ajaran baru
+      const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
+
       for (const data of siswaData) {
-        const { siswaId, status, toKelasId } = data; // toKelasId bersifat opsional per siswa
+        const { siswaId, status, toKelasId } = data;
         const siswa = await User.findById(siswaId).session(session);
+
         if (!siswa) {
           console.warn(`Siswa dengan ID ${siswaId} tidak ditemukan.`);
           continue;
         }
 
-        // Catat riwayat kelas sebelum pindah
+        // Catat riwayat dengan semester genap (akhir tahun)
         const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
           (riwayat) =>
             riwayat.kelas.equals(fromKelasId) &&
-            riwayat.tahunAjaran === tahunAjaran
+            riwayat.tahunAjaran === tahunAjaran &&
+            riwayat.semester === "genap"
         );
+
         if (!sudahAdaDiRiwayat) {
           siswa.riwayatKelas.push({
             kelas: fromKelasId,
             tahunAjaran: tahunAjaran,
-            semester: semester,
+            semester: "genap", // Selalu genap saat kenaikan
           });
         }
 
         if (status === "Naik Kelas") {
-          const targetKelasId = toKelasId || defaultToKelasId; // Prioritaskan ID individu
-          if (!targetKelasId) {
+          if (!toKelasId) {
             throw new Error(
               `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
             );
           }
-          siswa.kelas = targetKelasId;
+
+          // Update kelas siswa
+          siswa.kelas = toKelasId;
+
+          // Tambahkan ke kelas baru
           await Kelas.findByIdAndUpdate(
-            targetKelasId,
+            toKelasId,
             { $addToSet: { siswa: siswaId } },
             { session }
           );
+        } else if (status === "Tinggal Kelas") {
+          // Siswa tetap di kelas yang sama, tidak perlu update
+          // Tapi catat di riwayat bahwa dia tinggal kelas
+          siswa.riwayatKelas.push({
+            kelas: fromKelasId,
+            tahunAjaran: nextTahunAjaran,
+            semester: "ganjil",
+            notes: "Tinggal Kelas", // Bisa ditambah field notes
+          });
         } else if (status === "Lulus") {
+          // Siswa lulus - kosongkan kelas dan nonaktifkan
           siswa.kelas = null;
-          siswa.isActive = false; // Nonaktifkan siswa yang lulus
+          siswa.isActive = false;
+          siswa.graduationYear = parseInt(tahunAjaran.split("/")[1]);
         }
-        // Untuk "Tinggal Kelas", tidak ada perubahan pada field 'kelas' siswa
+
         await siswa.save({ session });
       }
 
-      // Update daftar siswa di kelas lama
+      // Hapus siswa yang naik/lulus dari kelas lama
       const siswaYangPindahAtauLulus = siswaData
         .filter((s) => s.status === "Naik Kelas" || s.status === "Lulus")
         .map((s) => s.siswaId);
@@ -794,10 +962,20 @@ exports.processPromotion = [
       );
 
       await session.commitTransaction();
-      res.json({ message: "Proses kenaikan kelas berhasil diselesaikan." });
+
+      res.json({
+        success: true,
+        message: "Proses kenaikan kelas berhasil diselesaikan.",
+        summary: {
+          naik: siswaData.filter((s) => s.status === "Naik Kelas").length,
+          tinggal: siswaData.filter((s) => s.status === "Tinggal Kelas").length,
+          lulus: siswaData.filter((s) => s.status === "Lulus").length,
+        },
+      });
     } catch (error) {
       await session.abortTransaction();
       res.status(500).json({
+        success: false,
         message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
         error: error.message,
       });
