@@ -229,6 +229,10 @@ exports.updateMateri = async (req, res) => {
 exports.deleteMateriFile = async (req, res) => {
   try {
     const { id, publicId } = req.params;
+
+    // Decode public_id yang di-encode dari frontend
+    const decodedPublicId = decodeURIComponent(publicId);
+
     const materi = await Materi.findById(id);
 
     if (!materi) {
@@ -241,15 +245,17 @@ exports.deleteMateriFile = async (req, res) => {
         .json({ message: "Anda tidak berhak mengubah materi ini." });
     }
 
-    // Cari file yang akan dihapus
-    const fileIndex = materi.files.findIndex((f) => f.public_id === publicId);
+    // Cari file yang akan dihapus menggunakan decoded public_id
+    const fileIndex = materi.files.findIndex(
+      (f) => f.public_id === decodedPublicId
+    );
 
     if (fileIndex === -1) {
       return res.status(404).json({ message: "File tidak ditemukan." });
     }
 
     // Hapus dari Cloudinary
-    await deleteFile(publicId);
+    await deleteFile(decodedPublicId);
 
     // Hapus dari database
     materi.files.splice(fileIndex, 1);
