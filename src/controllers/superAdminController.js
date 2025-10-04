@@ -115,10 +115,17 @@ exports.getDashboard = async (req, res) => {
       ]),
     ]);
 
+    // PERBAIKAN: Handle kondisi no data
     const formatRasio = rasioKehadiran.reduce((acc, item) => {
       acc[item.status] = item.count;
       return acc;
     }, {});
+
+    const totalAbsensi =
+      (formatRasio.hadir || 0) +
+      (formatRasio.sakit || 0) +
+      (formatRasio.izin || 0) +
+      (formatRasio.alpa || 0);
 
     res.json({
       message: "Dashboard Super Admin",
@@ -139,6 +146,8 @@ exports.getDashboard = async (req, res) => {
           sakit: formatRasio.sakit || 0,
           izin: formatRasio.izin || 0,
           alpa: formatRasio.alpa || 0,
+          total: totalAbsensi,
+          isEmpty: totalAbsensi === 0, // Flag untuk frontend
         },
       },
     });
@@ -607,7 +616,7 @@ exports.getPromotionRecommendation = async (req, res) => {
       });
     }
 
-    // PERBAIKAN: Validasi semester genap
+    // Validasi semester genap
     const settings = await Settings.getSettings();
     if (settings.semesterAktif !== "genap") {
       return res.status(400).json({
@@ -665,7 +674,6 @@ exports.getPromotionRecommendation = async (req, res) => {
             siswa: siswa._id,
             "jadwalInfo.kelas": kelas._id,
             "jadwalInfo.tahunAjaran": tahunAjaran,
-            // Mencakup ganjil dan genap
           },
         },
         {
@@ -691,22 +699,29 @@ exports.getPromotionRecommendation = async (req, res) => {
       const totalSakit = absensiMap.sakit || 0;
       const totalIzin = absensiMap.izin || 0;
       const totalAlpa = absensiMap.alpa || 0;
+      const totalAbsensiDicatat =
+        totalHadir + totalSakit + totalIzin + totalAlpa;
 
-      // Estimasi total pertemuan (jadwal x 2 semester x perkiraan pertemuan)
-      const estimasiTotalPertemuan = totalJadwalSetahun * 30; // ~30 minggu per tahun
-      const attendancePercentage =
-        estimasiTotalPertemuan > 0
-          ? (totalHadir / estimasiTotalPertemuan) * 100
-          : 100;
+      // PERBAIKAN: Handle kondisi no data
+      const estimasiTotalPertemuan = totalJadwalSetahun * 30;
+      let attendancePercentage = null;
+      let attendanceStatus = "no_data";
+
+      if (totalAbsensiDicatat > 0) {
+        attendancePercentage = (totalHadir / totalAbsensiDicatat) * 100;
+        attendanceStatus = "calculated";
+      } else if (estimasiTotalPertemuan > 0) {
+        // Ada jadwal tapi belum ada absensi yang dicatat
+        attendancePercentage = 0;
+        attendanceStatus = "no_attendance_recorded";
+      }
 
       // 2. Hitung Nilai di Bawah KKM SETAHUN
       const nilaiSetahun = await Nilai.find({
         siswa: siswa._id,
         tahunAjaran: tahunAjaran,
-        // Ambil semua semester (ganjil + genap)
       });
 
-      // Group by mataPelajaran, ambil rata-rata
       const nilaiPerMapel = {};
       nilaiSetahun.forEach((n) => {
         const mapelId = n.mataPelajaran.toString();
@@ -716,7 +731,6 @@ exports.getPromotionRecommendation = async (req, res) => {
         nilaiPerMapel[mapelId].push(n.nilai);
       });
 
-      // Hitung rata-rata per mapel
       let mapelDiBawahKKM = 0;
       let totalNilaiRataRata = 0;
       const jumlahMapel = Object.keys(nilaiPerMapel).length;
@@ -731,13 +745,23 @@ exports.getPromotionRecommendation = async (req, res) => {
       });
 
       const nilaiRataRata =
-        jumlahMapel > 0 ? totalNilaiRataRata / jumlahMapel : 0;
+        jumlahMapel > 0 ? totalNilaiRataRata / jumlahMapel : null;
 
       // 3. Tentukan Rekomendasi
       let systemRecommendation = "Naik Kelas";
       const reasons = [];
+      const warnings = [];
 
-      if (attendancePercentage < minAttendancePercentage) {
+      // PERBAIKAN: Handle no data scenarios
+      if (
+        attendanceStatus === "no_data" ||
+        attendanceStatus === "no_attendance_recorded"
+      ) {
+        warnings.push(
+          "Data kehadiran belum tersedia - rekomendasi berdasarkan nilai saja"
+        );
+        systemRecommendation = "Perlu Review Manual";
+      } else if (attendancePercentage < minAttendancePercentage) {
         systemRecommendation = "Tinggal Kelas";
         reasons.push(
           `Kehadiran di bawah ${minAttendancePercentage}% (hanya ${attendancePercentage.toFixed(
@@ -746,22 +770,37 @@ exports.getPromotionRecommendation = async (req, res) => {
         );
       }
 
-      if (mapelDiBawahKKM > maxSubjectsBelowPassingGrade) {
+      if (nilaiRataRata === null) {
+        warnings.push(
+          "Data nilai belum tersedia - rekomendasi berdasarkan kehadiran saja"
+        );
+        if (systemRecommendation === "Naik Kelas") {
+          systemRecommendation = "Perlu Review Manual";
+        }
+      } else if (mapelDiBawahKKM > maxSubjectsBelowPassingGrade) {
         systemRecommendation = "Tinggal Kelas";
         reasons.push(
           `Memiliki ${mapelDiBawahKKM} mapel di bawah KKM (maksimal: ${maxSubjectsBelowPassingGrade})`
         );
       }
 
-      // Untuk kelas XII, default rekomendasi adalah Lulus
+      // Override untuk kelas XII
       if (kelas.tingkat === "XII" && systemRecommendation === "Naik Kelas") {
         systemRecommendation = "Lulus";
+      }
+
+      // Jika tidak ada data sama sekali
+      if (warnings.length === 2) {
+        reasons.push(
+          "Tidak ada data akademik yang cukup untuk evaluasi otomatis"
+        );
+      } else if (reasons.length === 0 && warnings.length === 0) {
+        reasons.push("Memenuhi kriteria kenaikan kelas");
       }
 
       // Tentukan kelas tujuan default
       let recommendedKelasId = null;
       if (systemRecommendation === "Naik Kelas") {
-        // Cari kelas tingkat selanjutnya dengan jurusan yang sama
         const nextTingkat = kelas.tingkat === "X" ? "XI" : "XII";
         const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
 
@@ -773,14 +812,15 @@ exports.getPromotionRecommendation = async (req, res) => {
         }).select("_id nama");
 
         recommendedKelasId = nextKelas?._id;
-      } else if (systemRecommendation === "Tinggal Kelas") {
-        // Cari kelas yang sama untuk tahun ajaran berikutnya
+      } else if (
+        systemRecommendation === "Tinggal Kelas" ||
+        systemRecommendation === "Perlu Review Manual"
+      ) {
         const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
 
         const sameKelas = await Kelas.findOne({
           tingkat: kelas.tingkat,
           jurusan: kelas.jurusan,
-          nama: kelas.nama,
           tahunAjaran: nextTahunAjaran,
           isActive: true,
         }).select("_id nama");
@@ -793,19 +833,28 @@ exports.getPromotionRecommendation = async (req, res) => {
         nama: siswa.name,
         nis: siswa.identifier,
         rekap: {
-          attendancePercentage: attendancePercentage.toFixed(1),
+          attendancePercentage:
+            attendancePercentage !== null
+              ? attendancePercentage.toFixed(1)
+              : null,
+          attendanceStatus,
           subjectsBelowPassingGrade: mapelDiBawahKKM,
-          nilaiRataRata: nilaiRataRata.toFixed(1),
+          nilaiRataRata:
+            nilaiRataRata !== null ? nilaiRataRata.toFixed(1) : null,
           totalHadir,
           totalSakit,
           totalIzin,
           totalAlpa,
+          totalAbsensiDicatat,
+          hasNilaiData: nilaiRataRata !== null,
+          hasAttendanceData: attendanceStatus === "calculated",
         },
         systemRecommendation,
         recommendedKelasId,
-        reasons:
-          reasons.length > 0 ? reasons : ["Memenuhi kriteria kenaikan kelas"],
+        reasons,
+        warnings,
         status: systemRecommendation,
+        needsManualReview: warnings.length > 0,
       });
     }
 
@@ -828,6 +877,23 @@ exports.getPromotionRecommendation = async (req, res) => {
           tinggal: recommendations.filter((r) => r.status === "Tinggal Kelas")
             .length,
           lulus: recommendations.filter((r) => r.status === "Lulus").length,
+          needsReview: recommendations.filter((r) => r.needsManualReview)
+            .length,
+        },
+        dataAvailability: {
+          hasAttendanceData: recommendations.some(
+            (r) => r.rekap.hasAttendanceData
+          ),
+          hasNilaiData: recommendations.some((r) => r.rekap.hasNilaiData),
+          message: recommendations.every(
+            (r) => !r.rekap.hasAttendanceData && !r.rekap.hasNilaiData
+          )
+            ? "Tidak ada data akademik. Sistem merekomendasikan review manual untuk semua siswa."
+            : recommendations.some(
+                (r) => !r.rekap.hasAttendanceData || !r.rekap.hasNilaiData
+              )
+            ? "Beberapa data akademik belum lengkap. Harap review dengan cermat."
+            : "Data akademik lengkap.",
         },
       },
     });
