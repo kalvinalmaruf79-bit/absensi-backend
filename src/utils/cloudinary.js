@@ -21,11 +21,10 @@ const uploadFromBuffer = (buffer, folder) => {
     const stream = cloudinary.uploader.upload_stream(
       {
         folder: folder,
-        resource_type: "auto", // Biarkan Cloudinary mendeteksi tipe file
-        type: "upload", // PENTING: Pastikan type adalah 'upload' bukan 'private'
-        access_mode: "public", // TAMBAHAN: Set file menjadi publicly accessible
-        // Untuk keamanan ekstra, bisa tambahkan:
-        // allowed_formats: ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx"],
+        resource_type: "auto",
+        type: "upload", // CRITICAL: Harus 'upload' bukan 'authenticated' atau 'private'
+        access_control: [{ access_type: "anonymous" }], // Izinkan akses anonim/public
+        invalidate: true, // Clear CDN cache
       },
       (error, result) => {
         if (result) {
