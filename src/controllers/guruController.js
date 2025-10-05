@@ -6,6 +6,7 @@ const Absensi = require("../models/Absensi");
 const Nilai = require("../models/Nilai");
 const Kelas = require("../models/Kelas");
 const Pengumuman = require("../models/Pengumuman");
+const MataPelajaran = require("../models/MataPelajaran");
 const ActivityLog = require("../models/ActivityLog"); // <-- 1. Impor ActivityLog
 const ExcelJS = require("exceljs");
 
@@ -108,6 +109,72 @@ exports.getDashboard = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
+  }
+};
+/**
+ * Get Kelas yang Diampu oleh Guru
+ * Mengambil daftar kelas dari jadwal yang aktif
+ */
+exports.getKelasDiampu = async (req, res) => {
+  try {
+    const guruId = req.user.id;
+
+    // Ambil ID kelas unik dari jadwal yang aktif
+    const kelasIds = await Jadwal.find({
+      guru: guruId,
+      isActive: true,
+    })
+      .distinct("kelas")
+      .exec();
+
+    // Populate data lengkap kelas
+    const kelasList = await Kelas.find({
+      _id: { $in: kelasIds },
+      isActive: true,
+    })
+      .select("nama tingkat jurusan")
+      .sort({ tingkat: 1, nama: 1 });
+
+    res.json(kelasList);
+  } catch (error) {
+    console.error("Error getKelasDiampu:", error);
+    res.status(500).json({
+      message: "Gagal mengambil data kelas yang diampu.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Get Mata Pelajaran yang Diampu oleh Guru
+ * Mengambil daftar mata pelajaran dari jadwal yang aktif
+ */
+exports.getMataPelajaranDiampu = async (req, res) => {
+  try {
+    const guruId = req.user.id;
+
+    // Ambil ID mata pelajaran unik dari jadwal yang aktif
+    const mataPelajaranIds = await Jadwal.find({
+      guru: guruId,
+      isActive: true,
+    })
+      .distinct("mataPelajaran")
+      .exec();
+
+    // Populate data lengkap mata pelajaran
+    const mataPelajaranList = await MataPelajaran.find({
+      _id: { $in: mataPelajaranIds },
+    })
+      .select("nama kode")
+      .sort({ nama: 1 });
+
+    res.json(mataPelajaranList);
+  } catch (error) {
+    console.error("Error getMataPelajaranDiampu:", error);
+    res.status(500).json({
+      message: "Gagal mengambil data mata pelajaran yang diampu.",
       error: error.message,
     });
   }

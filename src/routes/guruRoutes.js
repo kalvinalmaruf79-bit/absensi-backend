@@ -4,6 +4,8 @@ const router = express.Router();
 
 const {
   getDashboard,
+  getKelasDiampu,
+  getMataPelajaranDiampu,
   getJadwalGuru,
   getSiswaKelas,
   inputNilai,
@@ -32,6 +34,8 @@ router.use("/wali-kelas", waliKelasRoutes);
 // Dashboard & Profile
 router.get("/dashboard", getDashboard);
 router.get("/jadwal", getJadwalGuru);
+router.get("/kelas", getKelasDiampu);
+router.get("/mata-pelajaran", getMataPelajaranDiampu);
 
 // Absensi Management
 router.get("/absensi/sesi", getAbsensiBySesi);
