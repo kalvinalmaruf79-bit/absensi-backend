@@ -8,12 +8,18 @@ const Kelas = require("../models/Kelas");
 const Pengumuman = require("../models/Pengumuman");
 const MataPelajaran = require("../models/MataPelajaran");
 const ActivityLog = require("../models/ActivityLog");
+const Settings = require("../models/Settings"); // <-- 1. IMPORT MODEL SETTINGS
 const ExcelJS = require("exceljs");
 const logActivity = require("../middleware/activityLogger");
 
-// ============= DASHBOARD & PROFILE =============
+// ============= DASHBOARD & PROFILE (IMPROVED) =============
 exports.getDashboard = async (req, res) => {
   try {
+    // --- PERUBAHAN UTAMA: Ambil pengaturan global terlebih dahulu ---
+    const settings = await Settings.getSettings();
+    const { tahunAjaranAktif, semesterAktif } = settings;
+    // -----------------------------------------------------------
+
     const guru = await User.findById(req.user.id).populate(
       "mataPelajaran",
       "nama kode"
@@ -34,15 +40,24 @@ exports.getDashboard = async (req, res) => {
 
     const [jadwalHariIni, jadwalGuru, pengumumanTerbaru, rekapAbsensiBulanIni] =
       await Promise.all([
+        // PERUBAHAN: Filter jadwal hari ini berdasarkan periode aktif
         Jadwal.find({
           guru: guru._id,
           hari: hariIni,
           isActive: true,
+          tahunAjaran: tahunAjaranAktif,
+          semester: semesterAktif,
         })
           .populate("kelas", "nama")
           .populate("mataPelajaran", "nama")
           .sort({ jamMulai: 1 }),
-        Jadwal.find({ guru: guru._id, isActive: true }).distinct("kelas"),
+        // PERUBAHAN: Ambil kelas yang diajar pada periode aktif
+        Jadwal.find({
+          guru: guru._id,
+          isActive: true,
+          tahunAjaran: tahunAjaranAktif,
+          semester: semesterAktif,
+        }).distinct("kelas"),
         Pengumuman.find({
           isPublished: true,
           $or: [{ targetRole: "semua" }, { targetRole: "guru" }],
@@ -50,12 +65,22 @@ exports.getDashboard = async (req, res) => {
           .sort({ createdAt: -1 })
           .limit(5)
           .populate("pembuat", "name role"),
+        // PERUBAHAN: Filter rekap absensi berdasarkan periode aktif
         Absensi.aggregate([
           {
+            $lookup: {
+              from: "jadwals",
+              localField: "jadwal",
+              foreignField: "_id",
+              as: "jadwalInfo",
+            },
+          },
+          { $unwind: "$jadwalInfo" },
+          {
             $match: {
-              jadwal: {
-                $in: await Jadwal.find({ guru: guru._id }).select("_id"),
-              },
+              "jadwalInfo.guru": guru._id,
+              "jadwalInfo.tahunAjaran": tahunAjaranAktif,
+              "jadwalInfo.semester": semesterAktif,
               createdAt: {
                 $gte: new Date(
                   new Date().getFullYear(),
@@ -98,6 +123,11 @@ exports.getDashboard = async (req, res) => {
           sakit: statsAbsensi.sakit || 0,
           alpa: statsAbsensi.alpa || 0,
         },
+      },
+      settings: {
+        // Kirim juga info settings ke frontend
+        tahunAjaranAktif,
+        semesterAktif,
       },
     });
   } catch (error) {
@@ -808,7 +838,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
         .json({ message: "Siswa tidak ditemukan atau tidak memiliki kelas." });
     }
 
-    // Validasi hak akses guru
     const isMengajar = await Jadwal.findOne({
       guru: req.user.id,
       kelas: siswa.kelas,
@@ -822,7 +851,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
     const objectIdSiswa = new mongoose.Types.ObjectId(siswaId);
     const objectIdKelas = new mongoose.Types.ObjectId(siswa.kelas);
 
-    // 1. Ambil semua nilai siswa dan kelas pada periode yang sama
     const [nilaiSiswa, nilaiKelas, absensiSiswa] = await Promise.all([
       Nilai.find({ siswa: objectIdSiswa, tahunAjaran, semester }).populate(
         "mataPelajaran",
@@ -835,12 +863,11 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
             siswa: objectIdSiswa,
             tanggal: { $regex: tahunAjaran.substring(0, 4) },
           },
-        }, // Filter kasar berdasarkan tahun
+        },
         { $group: { _id: "$keterangan", count: { $sum: 1 } } },
       ]),
     ]);
 
-    // 2. Kalkulasi Rata-rata Keseluruhan Siswa
     const totalNilaiSiswa = nilaiSiswa.reduce(
       (acc, curr) => acc + curr.nilai,
       0
@@ -848,10 +875,8 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
     const rataRataSiswa =
       nilaiSiswa.length > 0 ? totalNilaiSiswa / nilaiSiswa.length : 0;
 
-    // 3. Kalkulasi Rata-rata per Mata Pelajaran (Siswa vs Kelas)
     const analisisPerMapel = {};
 
-    // Proses nilai siswa
     nilaiSiswa.forEach((n) => {
       const mapelId = n.mataPelajaran._id.toString();
       if (!analisisPerMapel[mapelId]) {
@@ -865,7 +890,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
       analisisPerMapel[mapelId].nilaiSiswa.push(n.nilai);
     });
 
-    // Proses nilai kelas
     const nilaiKelasPerMapel = {};
     nilaiKelas.forEach((n) => {
       const mapelId = n.mataPelajaran.toString();
@@ -875,7 +899,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
       nilaiKelasPerMapel[mapelId].push(n.nilai);
     });
 
-    // Gabungkan dan hitung rata-rata
     for (const mapelId in analisisPerMapel) {
       const siswaScores = analisisPerMapel[mapelId].nilaiSiswa;
       analisisPerMapel[mapelId].rataRataSiswa =
@@ -888,7 +911,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
       }
     }
 
-    // 4. Format Rekap Absensi
     const rekapAbsensi = { hadir: 0, sakit: 0, izin: 0, alpa: 0 };
     absensiSiswa.forEach((item) => {
       if (rekapAbsensi.hasOwnProperty(item._id)) {
