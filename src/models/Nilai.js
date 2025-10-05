@@ -26,8 +26,16 @@ const nilaiSchema = new mongoose.Schema(
     },
     jenisPenilaian: {
       type: String,
-      enum: ["tugas", "uts", "uas", "praktek", "harian"],
+      enum: ["tugas", "uts", "uas", "praktik", "harian"], // 'praktek' diubah menjadi 'praktik'
       required: true,
+    },
+    // PERUBAHAN BARU: Relasi ke tugas spesifik
+    tugas: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Tugas",
+      required: function () {
+        return this.jenisPenilaian === "tugas";
+      },
     },
     nilai: {
       type: Number,
@@ -49,6 +57,8 @@ const nilaiSchema = new mongoose.Schema(
   }
 );
 
+// DIHAPUS: Index unik yang lama dihapus untuk memungkinkan multiple input.
+/*
 nilaiSchema.index(
   {
     siswa: 1,
@@ -59,6 +69,11 @@ nilaiSchema.index(
   },
   { unique: true }
 );
+*/
+
+// PERUBAHAN BARU: Index terpisah untuk optimasi query
+nilaiSchema.index({ siswa: 1, mataPelajaran: 1 });
+nilaiSchema.index({ kelas: 1, tahunAjaran: 1, semester: 1 });
 
 // 2. Tambahkan plugin ke skema
 nilaiSchema.plugin(mongoosePaginate);

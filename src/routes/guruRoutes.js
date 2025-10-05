@@ -13,10 +13,13 @@ const {
   getNilaiSiswa,
   getDetailNilaiSiswa,
   exportNilai,
+  updateNilai, // <-- IMPOR BARU
+  deleteNilai, // <-- IMPOR BARU
+  getNilaiStats, // <-- IMPOR BARU
   getAnalisisKinerjaSiswa,
   getAbsensiBySesi,
   getRekapNilaiKelas,
-  getHistoriAktivitasSiswa, // <-- 1. Impor fungsi baru
+  getHistoriAktivitasSiswa,
 } = require("../controllers/guruController");
 
 const {
@@ -48,12 +51,21 @@ router.get("/kelas/:kelasId/rekap-nilai", getRekapNilaiKelas);
 router.get("/siswa/:siswaId/histori-aktivitas", getHistoriAktivitasSiswa);
 // ---------------------------------------------
 
+// =======================================================
 // Nilai Management
 router.post("/nilai", inputNilai);
 router.post("/nilai/bulk", inputNilaiMassal);
 router.get("/nilai", getNilaiSiswa);
+
+// --- RUTE BARU UNTUK STATISTIK, UPDATE, DAN DELETE ---
+router.get("/nilai/stats", getNilaiStats); // Endpoint untuk statistik
+router.put("/nilai/:id", ...updateNilai); // Endpoint untuk update satu nilai
+router.delete("/nilai/:id", ...deleteNilai); // Endpoint untuk hapus satu nilai
+// --------------------------------------------------
+
 router.get("/nilai/siswa/:siswaId", getDetailNilaiSiswa);
 router.get("/nilai/export", exportNilai);
+// =======================================================
 
 // Analisis Kinerja
 router.get("/analisis-kinerja", getAnalisisKinerjaSiswa);

@@ -7,8 +7,9 @@ const Nilai = require("../models/Nilai");
 const Kelas = require("../models/Kelas");
 const Pengumuman = require("../models/Pengumuman");
 const MataPelajaran = require("../models/MataPelajaran");
-const ActivityLog = require("../models/ActivityLog"); // <-- 1. Impor ActivityLog
+const ActivityLog = require("../models/ActivityLog");
 const ExcelJS = require("exceljs");
+const logActivity = require("../middleware/activityLogger");
 
 // ============= DASHBOARD & PROFILE =============
 exports.getDashboard = async (req, res) => {
@@ -31,47 +32,42 @@ exports.getDashboard = async (req, res) => {
       "sabtu",
     ][new Date().getDay()];
 
-    const [
-      jadwalHariIni,
-      jadwalGuru,
-      pengumumanTerbaru,
-      rekapAbsensiBulanIni, // <-- 2. Tambahkan variabel untuk rekap absensi
-    ] = await Promise.all([
-      Jadwal.find({
-        guru: guru._id,
-        hari: hariIni,
-        isActive: true,
-      })
-        .populate("kelas", "nama")
-        .populate("mataPelajaran", "nama")
-        .sort({ jamMulai: 1 }),
-      Jadwal.find({ guru: guru._id, isActive: true }).distinct("kelas"),
-      Pengumuman.find({
-        isPublished: true,
-        $or: [{ targetRole: "semua" }, { targetRole: "guru" }],
-      })
-        .sort({ createdAt: -1 })
-        .limit(5)
-        .populate("pembuat", "name role"),
-      // <-- 3. Logika agregasi untuk rekap absensi bulan ini
-      Absensi.aggregate([
-        {
-          $match: {
-            jadwal: {
-              $in: await Jadwal.find({ guru: guru._id }).select("_id"),
-            },
-            createdAt: {
-              $gte: new Date(
-                new Date().getFullYear(),
-                new Date().getMonth(),
-                1
-              ),
+    const [jadwalHariIni, jadwalGuru, pengumumanTerbaru, rekapAbsensiBulanIni] =
+      await Promise.all([
+        Jadwal.find({
+          guru: guru._id,
+          hari: hariIni,
+          isActive: true,
+        })
+          .populate("kelas", "nama")
+          .populate("mataPelajaran", "nama")
+          .sort({ jamMulai: 1 }),
+        Jadwal.find({ guru: guru._id, isActive: true }).distinct("kelas"),
+        Pengumuman.find({
+          isPublished: true,
+          $or: [{ targetRole: "semua" }, { targetRole: "guru" }],
+        })
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .populate("pembuat", "name role"),
+        Absensi.aggregate([
+          {
+            $match: {
+              jadwal: {
+                $in: await Jadwal.find({ guru: guru._id }).select("_id"),
+              },
+              createdAt: {
+                $gte: new Date(
+                  new Date().getFullYear(),
+                  new Date().getMonth(),
+                  1
+                ),
+              },
             },
           },
-        },
-        { $group: { _id: "$keterangan", count: { $sum: 1 } } },
-      ]),
-    ]);
+          { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+        ]),
+      ]);
 
     const totalSiswa = await User.countDocuments({
       role: "siswa",
@@ -79,7 +75,6 @@ exports.getDashboard = async (req, res) => {
       isActive: true,
     });
 
-    // <-- 4. Format data rekap absensi agar siap digunakan frontend
     const statsAbsensi = {};
     rekapAbsensiBulanIni.forEach((stat) => {
       statsAbsensi[stat._id] = stat.count;
@@ -97,7 +92,6 @@ exports.getDashboard = async (req, res) => {
         totalMataPelajaran: guru.mataPelajaran ? guru.mataPelajaran.length : 0,
         totalKelas: jadwalGuru.length,
         totalSiswa,
-        // <-- 5. Kirim data statistik absensi yang sudah diformat
         absensiBulanIni: {
           hadir: statsAbsensi.hadir || 0,
           izin: statsAbsensi.izin || 0,
@@ -113,30 +107,22 @@ exports.getDashboard = async (req, res) => {
     });
   }
 };
-/**
- * Get Kelas yang Diampu oleh Guru
- * Mengambil daftar kelas dari jadwal yang aktif
- */
+
 exports.getKelasDiampu = async (req, res) => {
   try {
     const guruId = req.user.id;
-
-    // Ambil ID kelas unik dari jadwal yang aktif
     const kelasIds = await Jadwal.find({
       guru: guruId,
       isActive: true,
     })
       .distinct("kelas")
       .exec();
-
-    // Populate data lengkap kelas
     const kelasList = await Kelas.find({
       _id: { $in: kelasIds },
       isActive: true,
     })
       .select("nama tingkat jurusan")
       .sort({ tingkat: 1, nama: 1 });
-
     res.json(kelasList);
   } catch (error) {
     console.error("Error getKelasDiampu:", error);
@@ -147,29 +133,20 @@ exports.getKelasDiampu = async (req, res) => {
   }
 };
 
-/**
- * Get Mata Pelajaran yang Diampu oleh Guru
- * Mengambil daftar mata pelajaran dari jadwal yang aktif
- */
 exports.getMataPelajaranDiampu = async (req, res) => {
   try {
     const guruId = req.user.id;
-
-    // Ambil ID mata pelajaran unik dari jadwal yang aktif
     const mataPelajaranIds = await Jadwal.find({
       guru: guruId,
       isActive: true,
     })
       .distinct("mataPelajaran")
       .exec();
-
-    // Populate data lengkap mata pelajaran
     const mataPelajaranList = await MataPelajaran.find({
       _id: { $in: mataPelajaranIds },
     })
       .select("nama kode")
       .sort({ nama: 1 });
-
     res.json(mataPelajaranList);
   } catch (error) {
     console.error("Error getMataPelajaranDiampu:", error);
@@ -187,12 +164,10 @@ exports.getJadwalGuru = async (req, res) => {
     let filter = { guru: req.user.id, isActive: true };
     if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
     if (semester) filter.semester = semester;
-
     const jadwal = await Jadwal.find(filter)
       .populate("kelas", "nama tingkat jurusan")
       .populate("mataPelajaran", "nama kode")
       .sort({ hari: 1, jamMulai: 1 });
-
     const jadwalPerHari = {
       senin: [],
       selasa: [],
@@ -204,7 +179,6 @@ exports.getJadwalGuru = async (req, res) => {
     jadwal.forEach((j) => {
       if (jadwalPerHari[j.hari]) jadwalPerHari[j.hari].push(j);
     });
-
     res.json(jadwalPerHari);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
@@ -215,42 +189,35 @@ exports.getSiswaKelas = async (req, res) => {
   try {
     const { kelasId } = req.params;
     const { page = 1, limit = 100, search } = req.query;
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
       isActive: true,
     });
-
     if (!jadwal) {
       return res
         .status(403)
         .json({ message: "Anda tidak mengajar di kelas ini." });
     }
-
     let query = {
       kelas: kelasId,
       role: "siswa",
       isActive: true,
     };
-
     if (search) {
       const searchRegex = new RegExp(search, "i");
       query.$or = [{ name: searchRegex }, { identifier: searchRegex }];
     }
-
     const options = {
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
       select: "-password",
       sort: { name: 1 },
-      // PENTING: Populate kelas dengan semua field yang dibutuhkan
       populate: {
         path: "kelas",
         select: "nama tingkat jurusan",
       },
     };
-
     const result = await User.paginate(query, options);
     res.json(result);
   } catch (error) {
@@ -271,14 +238,12 @@ exports.getRekapNilaiKelas = async (req, res) => {
       tahunAjaran,
       export: exportToExcel,
     } = req.query;
-
     if (!mataPelajaranId || !semester || !tahunAjaran) {
       return res.status(400).json({
         message:
           "Query mataPelajaranId, semester, dan tahunAjaran wajib diisi.",
       });
     }
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -290,7 +255,6 @@ exports.getRekapNilaiKelas = async (req, res) => {
         message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
       });
     }
-
     const pipeline = [
       {
         $match: {
@@ -340,13 +304,10 @@ exports.getRekapNilaiKelas = async (req, res) => {
       },
       { $sort: { nama: 1 } },
     ];
-
     const rekapData = await Nilai.aggregate(pipeline);
-
     if (exportToExcel === "true") {
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet("Rekap Nilai");
-
       const columns = [
         { header: "Nama Siswa", key: "nama", width: 30 },
         { header: "NIS", key: "identifier", width: 20 },
@@ -362,7 +323,6 @@ exports.getRekapNilaiKelas = async (req, res) => {
         });
       });
       worksheet.columns = columns;
-
       rekapData.forEach((item) => {
         const rowData = {
           nama: item.nama,
@@ -375,13 +335,11 @@ exports.getRekapNilaiKelas = async (req, res) => {
         });
         worksheet.addRow(rowData);
       });
-
       const kelasInfo = await Kelas.findById(kelasId).select("nama");
       const fileName = `Rekap-Nilai-${kelasInfo.nama.replace(
         /\s+/g,
         "-"
       )}-${semester}-${tahunAjaran.replace("/", "-")}.xlsx`;
-
       res.setHeader(
         "Content-Type",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -390,7 +348,6 @@ exports.getRekapNilaiKelas = async (req, res) => {
       await workbook.xlsx.write(res);
       return res.status(200).end();
     }
-
     res.json(rekapData);
   } catch (error) {
     res.status(500).json({
@@ -409,7 +366,6 @@ exports.getAbsensiBySesi = async (req, res) => {
         .status(400)
         .json({ message: "Kelas, mata pelajaran, dan tanggal wajib diisi." });
     }
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -421,28 +377,23 @@ exports.getAbsensiBySesi = async (req, res) => {
         message: "Anda tidak memiliki jadwal mengajar untuk kelas ini.",
       });
     }
-
     const absensiRecords = await Absensi.find({
       jadwal: jadwal._id,
       tanggal: tanggal,
     }).select("siswa keterangan");
-
     const absensiMap = new Map();
     absensiRecords.forEach((record) =>
       absensiMap.set(record.siswa.toString(), record.keterangan)
     );
-
     const semuaSiswa = await User.find({
       kelas: kelasId,
       role: "siswa",
       isActive: true,
     }).select("name identifier");
-
     const daftarHadir = semuaSiswa.map((siswa) => ({
       siswa,
       keterangan: absensiMap.get(siswa._id.toString()) || "alpa",
     }));
-
     res.json(daftarHadir);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
@@ -466,7 +417,6 @@ exports.getSiswaWaliKelas = async (req, res) => {
     })
       .select("name identifier email")
       .sort({ name: 1 });
-
     res.json({
       kelas: {
         nama: kelas.nama,
@@ -480,7 +430,7 @@ exports.getSiswaWaliKelas = async (req, res) => {
   }
 };
 
-// ============= NILAI MANAGEMENT =============
+// ============= NILAI MANAGEMENT (IMPROVED) =============
 exports.inputNilai = async (req, res) => {
   try {
     const {
@@ -493,7 +443,6 @@ exports.inputNilai = async (req, res) => {
       semester,
       tahunAjaran,
     } = req.body;
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -505,7 +454,6 @@ exports.inputNilai = async (req, res) => {
         message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
       });
     }
-
     const siswa = await User.findOne({
       _id: siswaId,
       kelas: kelasId,
@@ -517,7 +465,6 @@ exports.inputNilai = async (req, res) => {
         .status(404)
         .json({ message: "Siswa tidak ditemukan di kelas ini." });
     }
-
     const newNilai = new Nilai({
       siswa: siswaId,
       kelas: kelasId,
@@ -530,7 +477,6 @@ exports.inputNilai = async (req, res) => {
       tahunAjaran,
     });
     await newNilai.save();
-
     res
       .status(201)
       .json({ message: "Nilai berhasil disimpan.", nilai: newNilai });
@@ -549,7 +495,6 @@ exports.inputNilaiMassal = async (req, res) => {
       tahunAjaran,
       nilaiSiswa,
     } = req.body;
-
     if (
       !kelasId ||
       !mataPelajaranId ||
@@ -560,7 +505,6 @@ exports.inputNilaiMassal = async (req, res) => {
     ) {
       return res.status(400).json({ message: "Semua field wajib diisi." });
     }
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -572,7 +516,6 @@ exports.inputNilaiMassal = async (req, res) => {
         message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
       });
     }
-
     const operasiNilai = nilaiSiswa.map((item) => ({
       updateOne: {
         filter: {
@@ -593,11 +536,9 @@ exports.inputNilaiMassal = async (req, res) => {
         upsert: true,
       },
     }));
-
     if (operasiNilai.length > 0) {
       await Nilai.bulkWrite(operasiNilai);
     }
-
     res.status(200).json({ message: "Semua nilai berhasil disimpan." });
   } catch (error) {
     console.error("Error input nilai massal:", error);
@@ -615,7 +556,6 @@ exports.getNilaiSiswa = async (req, res) => {
       page = 1,
       limit = 10,
     } = req.query;
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -627,7 +567,6 @@ exports.getNilaiSiswa = async (req, res) => {
         message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
       });
     }
-
     const query = {
       guru: req.user.id,
       kelas: kelasId,
@@ -635,7 +574,6 @@ exports.getNilaiSiswa = async (req, res) => {
       semester,
       tahunAjaran,
     };
-
     const options = {
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
@@ -645,7 +583,6 @@ exports.getNilaiSiswa = async (req, res) => {
         { path: "mataPelajaran", select: "nama kode" },
       ],
     };
-
     const result = await Nilai.paginate(query, options);
     res.json(result);
   } catch (error) {
@@ -656,18 +593,15 @@ exports.getNilaiSiswa = async (req, res) => {
 exports.getDetailNilaiSiswa = async (req, res) => {
   try {
     const { siswaId } = req.params;
-
     const siswa = await User.findById(siswaId)
       .populate("kelas", "nama tingkat jurusan")
       .select("-password");
     if (!siswa || siswa.role !== "siswa") {
       return res.status(404).json({ message: "Siswa tidak ditemukan." });
     }
-
     const nilai = await Nilai.find({ siswa: siswaId, guru: req.user.id })
       .populate("mataPelajaran", "nama kode")
       .sort({ createdAt: -1 });
-
     res.json({ siswa, nilai });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
@@ -677,14 +611,12 @@ exports.getDetailNilaiSiswa = async (req, res) => {
 exports.exportNilai = async (req, res) => {
   try {
     const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
-
     if (!kelasId || !mataPelajaranId || !semester || !tahunAjaran) {
       return res.status(400).json({
         message:
           "Semua parameter query (kelasId, mataPelajaranId, semester, tahunAjaran) wajib diisi.",
       });
     }
-
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
@@ -696,7 +628,6 @@ exports.exportNilai = async (req, res) => {
         message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
       });
     }
-
     const nilai = await Nilai.find({
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
@@ -706,16 +637,13 @@ exports.exportNilai = async (req, res) => {
       .populate("siswa", "name identifier")
       .populate("mataPelajaran", "nama")
       .populate("kelas", "nama");
-
     if (nilai.length === 0) {
       return res
         .status(404)
         .json({ message: "Tidak ada data nilai untuk diekspor." });
     }
-
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Daftar Nilai");
-
     worksheet.columns = [
       { header: "Nama Siswa", key: "nama", width: 25 },
       { header: "NIS", key: "nis", width: 20 },
@@ -724,7 +652,6 @@ exports.exportNilai = async (req, res) => {
       { header: "Deskripsi", key: "deskripsi", width: 30 },
       { header: "Tanggal", key: "tanggal", width: 15 },
     ];
-
     nilai.forEach((item) => {
       worksheet.addRow({
         nama: item.siswa.name,
@@ -735,20 +662,17 @@ exports.exportNilai = async (req, res) => {
         tanggal: new Date(item.tanggalPenilaian).toLocaleDateString("id-ID"),
       });
     });
-
     const mapel = nilai[0]?.mataPelajaran.nama || "Nilai";
     const kelas = nilai[0]?.kelas.nama || "Kelas";
     const fileName = `Nilai_${mapel.replace(/\s+/g, "-")}_${kelas.replace(
       /\s+/g,
       "-"
     )}.xlsx`;
-
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
     res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
-
     await workbook.xlsx.write(res);
     res.status(200).end();
   } catch (error) {
@@ -759,6 +683,113 @@ exports.exportNilai = async (req, res) => {
   }
 };
 
+// --- FUNGSI BARU DITAMBAHKAN DI SINI ---
+exports.updateNilai = [
+  logActivity("UPDATE_NILAI", (req) => `Mengubah nilai ID: ${req.params.id}.`),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { nilai, deskripsi } = req.body;
+      if (nilai === undefined) {
+        return res.status(400).json({ message: "Nilai wajib diisi." });
+      }
+      const nilaiRecord = await Nilai.findOneAndUpdate(
+        { _id: id, guru: req.user.id },
+        { $set: { nilai, deskripsi } },
+        { new: true, runValidators: true }
+      );
+      if (!nilaiRecord) {
+        return res.status(404).json({
+          message: "Data nilai tidak ditemukan atau Anda tidak memiliki akses.",
+        });
+      }
+      res.json({ message: "Nilai berhasil diperbarui.", data: nilaiRecord });
+    } catch (error) {
+      res
+        .status(500)
+        .json({ message: "Gagal memperbarui nilai.", error: error.message });
+    }
+  },
+];
+
+exports.deleteNilai = [
+  logActivity("DELETE_NILAI", (req) => `Menghapus nilai ID: ${req.params.id}.`),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const nilaiRecord = await Nilai.findOneAndDelete({
+        _id: id,
+        guru: req.user.id,
+      });
+      if (!nilaiRecord) {
+        return res.status(404).json({
+          message: "Data nilai tidak ditemukan atau Anda tidak memiliki akses.",
+        });
+      }
+      res.json({ message: "Nilai berhasil dihapus." });
+    } catch (error) {
+      res
+        .status(500)
+        .json({ message: "Gagal menghapus nilai.", error: error.message });
+    }
+  },
+];
+
+exports.getNilaiStats = async (req, res) => {
+  try {
+    const { kelasId, mataPelajaranId, semester, tahunAjaran } = req.query;
+    if (!kelasId || !mataPelajaranId || !semester || !tahunAjaran) {
+      return res.status(400).json({ message: "Semua parameter wajib diisi." });
+    }
+    const jadwal = await Jadwal.findOne({
+      guru: req.user.id,
+      kelas: kelasId,
+      mataPelajaran: mataPelajaranId,
+    });
+    if (!jadwal) {
+      return res
+        .status(403)
+        .json({ message: "Anda tidak mengajar di kelas ini." });
+    }
+    const stats = await Nilai.aggregate([
+      {
+        $match: {
+          kelas: new mongoose.Types.ObjectId(kelasId),
+          mataPelajaran: new mongoose.Types.ObjectId(mataPelajaranId),
+          semester: semester,
+          tahunAjaran: tahunAjaran,
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalNilai: { $sum: 1 },
+          rataRata: { $avg: "$nilai" },
+          siswaTuntas: {
+            $sum: { $cond: [{ $gte: ["$nilai", 75] }, 1, 0] },
+          },
+        },
+      },
+    ]);
+    const result = stats[0] || {
+      totalNilai: 0,
+      rataRata: 0,
+      siswaTuntas: 0,
+    };
+    res.json({
+      totalNilaiTerinput: result.totalNilai,
+      rataRataKelas: parseFloat(result.rataRata.toFixed(2)),
+      siswaTuntas: result.siswaTuntas,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal mengambil statistik nilai.",
+      error: error.message,
+    });
+  }
+};
+// ------------------------------------
+
 // ============= ANALISIS KINERJA SISWA (IMPLEMENTASI BARU) =============
 exports.getAnalisisKinerjaSiswa = async (req, res) => {
   try {
@@ -768,13 +799,10 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
         .status(400)
         .json({ message: "Parameter 'siswaId' wajib diisi." });
     }
-
     const siswa = await User.findById(siswaId);
     if (!siswa || siswa.role !== "siswa") {
       return res.status(404).json({ message: "Siswa tidak ditemukan." });
     }
-
-    // 1. Tren Nilai Rata-rata per Semester (untuk Grafik Garis)
     const trenNilai = await Nilai.aggregate([
       { $match: { siswa: new mongoose.Types.ObjectId(siswaId) } },
       {
@@ -792,11 +820,8 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
         },
       },
     ]);
-
-    // Jika parameter semester & tahun ajaran ada, hitung data perbandingan
     let perbandinganNilai = [];
     if (tahunAjaran && semester) {
-      // 2a. Rata-rata nilai siswa per jenis penilaian
       const nilaiSiswaPerJenis = await Nilai.aggregate([
         {
           $match: {
@@ -812,12 +837,10 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
           },
         },
       ]);
-
-      // 2b. Rata-rata nilai kelas per jenis penilaian
       const nilaiKelasPerJenis = await Nilai.aggregate([
         {
           $match: {
-            kelas: siswa.kelas, // Mengambil kelas aktif siswa
+            kelas: siswa.kelas,
             tahunAjaran: tahunAjaran,
             semester: semester,
           },
@@ -829,8 +852,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
           },
         },
       ]);
-
-      // Gabungkan data untuk perbandingan (untuk Grafik Radar/Batang)
       const mapKelas = new Map(
         nilaiKelasPerJenis.map((item) => [item._id, item.rataRata])
       );
@@ -840,7 +861,6 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
         rataRataKelas: Math.round((mapKelas.get(item._id) || 0) * 100) / 100,
       }));
     }
-
     res.json({
       message: `Analisis Kinerja untuk ${siswa.name}`,
       data: {
@@ -857,40 +877,30 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
   }
 };
 
-// <-- 6. FUNGSI BARU UNTUK GURU MELIHAT HISTORI AKTIVITAS SISWA
-/**
- * @summary Mengambil histori aktivitas siswa tertentu dengan pagination
- */
 exports.getHistoriAktivitasSiswa = async (req, res) => {
   try {
     const { siswaId } = req.params;
     const { page = 1, limit = 15 } = req.query;
-
-    // Validasi apakah guru berhak melihat data siswa ini (mengajar di kelas siswa tsb)
     const siswa = await User.findById(siswaId);
     if (!siswa || siswa.role !== "siswa") {
       return res.status(404).json({ message: "Siswa tidak ditemukan." });
     }
-
     const isMengajar = await Jadwal.findOne({
       guru: req.user.id,
       kelas: siswa.kelas,
       isActive: true,
     });
-
     if (!isMengajar && req.user.role !== "super_admin") {
       return res
         .status(403)
         .json({ message: "Anda tidak memiliki akses ke histori siswa ini." });
     }
-
     const query = { user: siswaId };
     const options = {
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
       sort: { createdAt: -1 },
     };
-
     const histori = await ActivityLog.paginate(query, options);
     res.json(histori);
   } catch (error) {

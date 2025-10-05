@@ -148,16 +148,12 @@ exports.updateTugas = async (req, res) => {
       return res.status(404).json({ message: "Tugas tidak ditemukan." });
     }
 
-    // Verifikasi kepemilikan
     if (tugas.guru.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          message: "Anda tidak memiliki akses untuk mengubah tugas ini.",
-        });
+      return res.status(403).json({
+        message: "Anda tidak memiliki akses untuk mengubah tugas ini.",
+      });
     }
 
-    // Update fields
     if (judul !== undefined) tugas.judul = judul;
     if (deskripsi !== undefined) tugas.deskripsi = deskripsi;
     if (mataPelajaran !== undefined) tugas.mataPelajaran = mataPelajaran;
@@ -168,14 +164,12 @@ exports.updateTugas = async (req, res) => {
 
     await tugas.save();
 
-    // Populate untuk response
     await tugas.populate([
       { path: "kelas", select: "nama tingkat jurusan" },
       { path: "mataPelajaran", select: "nama kode" },
       { path: "guru", select: "name identifier" },
     ]);
 
-    // Notifikasi siswa tentang perubahan (async, tidak perlu await)
     User.find({
       kelas: tugas.kelas._id,
       role: "siswa",
@@ -230,23 +224,18 @@ exports.deleteTugas = async (req, res) => {
       return res.status(404).json({ message: "Tugas tidak ditemukan." });
     }
 
-    // Verifikasi kepemilikan
     if (tugas.guru.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          message: "Anda tidak memiliki akses untuk menghapus tugas ini.",
-        });
+      return res.status(403).json({
+        message: "Anda tidak memiliki akses untuk menghapus tugas ini.",
+      });
     }
 
-    // Simpan info tugas sebelum dihapus
     const tugasJudul = tugas.judul;
     const tugasKelasId = tugas.kelas;
     const tugasMataPelajaran = tugas.mataPelajaran;
     const tugasSemester = tugas.semester;
     const tugasTahunAjaran = tugas.tahunAjaran;
 
-    // Hapus file submissions dari Cloudinary (async, tidak perlu menunggu)
     if (tugas.submissions && tugas.submissions.length > 0) {
       const deletePromises = tugas.submissions
         .filter((sub) => sub.public_id)
@@ -261,18 +250,13 @@ exports.deleteTugas = async (req, res) => {
       );
     }
 
-    // Hapus nilai terkait tugas ini (async)
+    // PERUBAHAN: Menghapus nilai berdasarkan ID tugas, bukan deskripsi
     Nilai.deleteMany({
-      deskripsi: `Tugas: ${tugasJudul}`,
-      mataPelajaran: tugasMataPelajaran,
-      semester: tugasSemester,
-      tahunAjaran: tugasTahunAjaran,
+      tugas: tugas._id,
     }).catch((err) => console.error("Error deleting nilai:", err));
 
-    // Hapus tugas
     await tugas.deleteOne();
 
-    // Notifikasi siswa (async, tidak perlu await)
     User.find({
       kelas: tugasKelasId,
       role: "siswa",
@@ -430,31 +414,35 @@ exports.gradeSubmission = async (req, res) => {
     submission.feedback = feedback;
     await tugas.save();
 
+    // --- PERUBAHAN UTAMA: Menautkan Nilai dengan Tugas ---
     const nilaiRecord = await Nilai.findOneAndUpdate(
       {
         siswa: submission.siswa,
-        mataPelajaran: tugas.mataPelajaran,
-        jenisPenilaian: "tugas",
-        deskripsi: `Tugas: ${tugas.judul}`,
-        semester: tugas.semester,
-        tahunAjaran: tugas.tahunAjaran,
+        tugas: tugas._id, // Filter berdasarkan ID tugas, bukan deskripsi
       },
       {
         $set: {
           nilai: nilai,
+          deskripsi: `Nilai untuk tugas: ${tugas.judul}`, // Deskripsi tetap informatif
+          // Data lain yang diperlukan
+          mataPelajaran: tugas.mataPelajaran,
           guru: req.user.id,
           kelas: tugas.kelas,
+          semester: tugas.semester,
+          tahunAjaran: tugas.tahunAjaran,
+          jenisPenilaian: "tugas",
         },
       },
       { upsert: true, new: true }
     );
+    // --------------------------------------------------
 
     const notif = new Notifikasi({
       penerima: submission.siswa,
       tipe: "nilai_baru",
       judul: `Nilai Tugas: ${tugas.judul}`,
       pesan: `Anda mendapatkan nilai ${nilai} untuk tugas ini.`,
-      resourceId: nilaiRecord._id,
+      resourceId: nilaiRecord._id, // resourceId merujuk ke dokumen Nilai
     });
     await notif.save();
 

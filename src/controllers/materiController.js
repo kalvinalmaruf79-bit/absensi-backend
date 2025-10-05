@@ -120,9 +120,18 @@ exports.getMateriById = async (req, res) => {
       req.user.role === "guru" &&
       materi.guru._id.toString() !== req.user.id
     ) {
-      return res
-        .status(403)
-        .json({ message: "Anda tidak berhak mengakses materi ini." });
+      // Izinkan jika guru masih mengajar di kelas & mapel tersebut (meski materi dibuat guru lain)
+      const isTeaching = await Jadwal.findOne({
+        guru: req.user.id,
+        kelas: materi.kelas._id,
+        mataPelajaran: materi.mataPelajaran._id,
+        isActive: true,
+      });
+      if (!isTeaching) {
+        return res
+          .status(403)
+          .json({ message: "Anda tidak berhak mengakses materi ini." });
+      }
     }
 
     res.json(materi);
@@ -166,7 +175,7 @@ exports.updateMateri = async (req, res) => {
   let newFilesToSave = [];
   try {
     const { id } = req.params;
-    const { judul, deskripsi, parsedLinks } = req.body;
+    const { judul, deskripsi, parsedLinks, mataPelajaran, kelas } = req.body; // Tambahkan mapel & kelas
 
     const materi = await Materi.findById(id);
 
@@ -179,6 +188,33 @@ exports.updateMateri = async (req, res) => {
         .status(403)
         .json({ message: "Anda tidak berhak mengubah materi ini." });
     }
+
+    // --- PERUBAHAN UTAMA: Validasi hak akses jika kelas atau mapel diubah ---
+    const targetKelas = kelas || materi.kelas;
+    const targetMataPelajaran = mataPelajaran || materi.mataPelajaran;
+
+    if (
+      kelas ||
+      mataPelajaran ||
+      !materi.kelas.equals(targetKelas) ||
+      !materi.mataPelajaran.equals(targetMataPelajaran)
+    ) {
+      const jadwal = await Jadwal.findOne({
+        guru: req.user.id,
+        kelas: targetKelas,
+        mataPelajaran: targetMataPelajaran,
+        isActive: true,
+      });
+
+      if (!jadwal) {
+        return res.status(403).json({
+          message: "Anda tidak mengajar di kelas atau mata pelajaran tujuan.",
+        });
+      }
+      materi.kelas = targetKelas;
+      materi.mataPelajaran = targetMataPelajaran;
+    }
+    // ---------------------------------------------------------------------
 
     // Update basic info
     materi.judul = judul || materi.judul;
@@ -230,7 +266,6 @@ exports.deleteMateriFile = async (req, res) => {
   try {
     const { id, publicId } = req.params;
 
-    // Decode public_id yang di-encode dari frontend
     const decodedPublicId = decodeURIComponent(publicId);
 
     const materi = await Materi.findById(id);
@@ -245,7 +280,6 @@ exports.deleteMateriFile = async (req, res) => {
         .json({ message: "Anda tidak berhak mengubah materi ini." });
     }
 
-    // Cari file yang akan dihapus menggunakan decoded public_id
     const fileIndex = materi.files.findIndex(
       (f) => f.public_id === decodedPublicId
     );
@@ -254,10 +288,8 @@ exports.deleteMateriFile = async (req, res) => {
       return res.status(404).json({ message: "File tidak ditemukan." });
     }
 
-    // Hapus dari Cloudinary
     await deleteFile(decodedPublicId);
 
-    // Hapus dari database
     materi.files.splice(fileIndex, 1);
     await materi.save();
 
@@ -283,7 +315,6 @@ exports.deleteMateri = async (req, res) => {
         .json({ message: "Anda tidak berhak menghapus materi ini." });
     }
 
-    // Hapus semua file terkait dari Cloudinary
     if (materi.files && materi.files.length > 0) {
       for (const file of materi.files) {
         if (file.public_id) {
@@ -291,13 +322,13 @@ exports.deleteMateri = async (req, res) => {
             await deleteFile(file.public_id);
           } catch (delError) {
             console.error("Error deleting file:", delError);
-            // Lanjutkan proses meski ada error pada file tertentu
           }
         }
       }
     }
 
-    await Materi.findByIdAndDelete(id);
+    // Menggunakan deleteOne() yang merupakan method instance dari Mongoose 6+
+    await materi.deleteOne();
 
     res.json({ message: "Materi dan semua file terkait berhasil dihapus." });
   } catch (error) {
