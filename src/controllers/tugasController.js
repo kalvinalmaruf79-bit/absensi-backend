@@ -158,47 +158,65 @@ exports.updateTugas = async (req, res) => {
     }
 
     // Update fields
-    if (judul) tugas.judul = judul;
-    if (deskripsi) tugas.deskripsi = deskripsi;
-    if (mataPelajaran) tugas.mataPelajaran = mataPelajaran;
-    if (kelas) tugas.kelas = kelas;
-    if (deadline) tugas.deadline = deadline;
-    if (semester) tugas.semester = semester;
-    if (tahunAjaran) tugas.tahunAjaran = tahunAjaran;
+    if (judul !== undefined) tugas.judul = judul;
+    if (deskripsi !== undefined) tugas.deskripsi = deskripsi;
+    if (mataPelajaran !== undefined) tugas.mataPelajaran = mataPelajaran;
+    if (kelas !== undefined) tugas.kelas = kelas;
+    if (deadline !== undefined) tugas.deadline = deadline;
+    if (semester !== undefined) tugas.semester = semester;
+    if (tahunAjaran !== undefined) tugas.tahunAjaran = tahunAjaran;
 
     await tugas.save();
 
-    // Notifikasi siswa tentang perubahan
-    const siswaDiKelas = await User.find({
-      kelas: tugas.kelas,
+    // Populate untuk response
+    await tugas.populate([
+      { path: "kelas", select: "nama tingkat jurusan" },
+      { path: "mataPelajaran", select: "nama kode" },
+      { path: "guru", select: "name identifier" },
+    ]);
+
+    // Notifikasi siswa tentang perubahan (async, tidak perlu await)
+    User.find({
+      kelas: tugas.kelas._id,
       role: "siswa",
-    }).select("_id deviceTokens");
+      isActive: true,
+    })
+      .select("_id deviceTokens")
+      .then((siswaDiKelas) => {
+        if (siswaDiKelas.length > 0) {
+          const siswaIds = siswaDiKelas.map((s) => s._id);
+          const playerIds = siswaDiKelas.flatMap((s) => s.deviceTokens || []);
 
-    const siswaIds = siswaDiKelas.map((s) => s._id);
-    const playerIds = siswaDiKelas.flatMap((s) => s.deviceTokens);
+          createBulkNotifikasi(
+            siswaIds,
+            "tugas_diubah",
+            `Tugas Diperbarui: ${tugas.judul}`,
+            "Tugas telah mengalami perubahan. Cek detailnya!",
+            tugas._id
+          ).catch((err) => console.error("Error creating notifications:", err));
 
-    await createBulkNotifikasi(
-      siswaIds,
-      "tugas_diubah",
-      `Tugas Diperbarui: ${tugas.judul}`,
-      "Tugas telah mengalami perubahan. Cek detailnya!",
-      tugas._id
-    );
-
-    sendPushNotification(
-      playerIds,
-      `Tugas Diperbarui: ${tugas.judul}`,
-      "Ada perubahan pada tugas. Lihat detailnya di aplikasi!",
-      {
-        type: "tugas_diubah",
-        resourceId: tugas._id.toString(),
-      }
-    );
+          if (playerIds.length > 0) {
+            sendPushNotification(
+              playerIds,
+              `Tugas Diperbarui: ${tugas.judul}`,
+              "Ada perubahan pada tugas. Lihat detailnya di aplikasi!",
+              {
+                type: "tugas_diubah",
+                resourceId: tugas._id.toString(),
+              }
+            );
+          }
+        }
+      })
+      .catch((err) => console.error("Error fetching students:", err));
 
     res.json({ message: "Tugas berhasil diperbarui.", tugas });
   } catch (error) {
     console.error("Error updating tugas:", error);
-    res.status(500).json({ message: "Gagal memperbarui tugas." });
+    res.status(500).json({
+      message: "Gagal memperbarui tugas.",
+      error: error.message,
+    });
   }
 };
 
@@ -221,58 +239,80 @@ exports.deleteTugas = async (req, res) => {
         });
     }
 
-    // Hapus file submissions dari Cloudinary
-    const deletePromises = tugas.submissions
-      .filter((sub) => sub.public_id)
-      .map((sub) =>
-        deleteFile(sub.public_id).catch((err) =>
-          console.error(`Gagal menghapus file ${sub.public_id}:`, err)
-        )
+    // Simpan info tugas sebelum dihapus
+    const tugasJudul = tugas.judul;
+    const tugasKelasId = tugas.kelas;
+    const tugasMataPelajaran = tugas.mataPelajaran;
+    const tugasSemester = tugas.semester;
+    const tugasTahunAjaran = tugas.tahunAjaran;
+
+    // Hapus file submissions dari Cloudinary (async, tidak perlu menunggu)
+    if (tugas.submissions && tugas.submissions.length > 0) {
+      const deletePromises = tugas.submissions
+        .filter((sub) => sub.public_id)
+        .map((sub) =>
+          deleteFile(sub.public_id).catch((err) =>
+            console.error(`Gagal menghapus file ${sub.public_id}:`, err)
+          )
+        );
+
+      Promise.all(deletePromises).catch((err) =>
+        console.error("Error deleting files:", err)
       );
+    }
 
-    await Promise.all(deletePromises);
-
-    // Hapus nilai terkait tugas ini
-    await Nilai.deleteMany({
-      deskripsi: `Tugas: ${tugas.judul}`,
-      mataPelajaran: tugas.mataPelajaran,
-      semester: tugas.semester,
-      tahunAjaran: tugas.tahunAjaran,
-    });
+    // Hapus nilai terkait tugas ini (async)
+    Nilai.deleteMany({
+      deskripsi: `Tugas: ${tugasJudul}`,
+      mataPelajaran: tugasMataPelajaran,
+      semester: tugasSemester,
+      tahunAjaran: tugasTahunAjaran,
+    }).catch((err) => console.error("Error deleting nilai:", err));
 
     // Hapus tugas
     await tugas.deleteOne();
 
-    // Notifikasi siswa
-    const siswaDiKelas = await User.find({
-      kelas: tugas.kelas,
+    // Notifikasi siswa (async, tidak perlu await)
+    User.find({
+      kelas: tugasKelasId,
       role: "siswa",
-    }).select("_id deviceTokens");
+      isActive: true,
+    })
+      .select("_id deviceTokens")
+      .then((siswaDiKelas) => {
+        if (siswaDiKelas.length > 0) {
+          const siswaIds = siswaDiKelas.map((s) => s._id);
+          const playerIds = siswaDiKelas.flatMap((s) => s.deviceTokens || []);
 
-    const siswaIds = siswaDiKelas.map((s) => s._id);
-    const playerIds = siswaDiKelas.flatMap((s) => s.deviceTokens);
+          createBulkNotifikasi(
+            siswaIds,
+            "tugas_dihapus",
+            `Tugas Dihapus: ${tugasJudul}`,
+            "Tugas telah dihapus oleh guru.",
+            null
+          ).catch((err) => console.error("Error creating notifications:", err));
 
-    await createBulkNotifikasi(
-      siswaIds,
-      "tugas_dihapus",
-      `Tugas Dihapus: ${tugas.judul}`,
-      "Tugas telah dihapus oleh guru.",
-      null
-    );
-
-    sendPushNotification(
-      playerIds,
-      `Tugas Dihapus: ${tugas.judul}`,
-      "Tugas telah dihapus oleh guru.",
-      {
-        type: "tugas_dihapus",
-      }
-    );
+          if (playerIds.length > 0) {
+            sendPushNotification(
+              playerIds,
+              `Tugas Dihapus: ${tugasJudul}`,
+              "Tugas telah dihapus oleh guru.",
+              {
+                type: "tugas_dihapus",
+              }
+            );
+          }
+        }
+      })
+      .catch((err) => console.error("Error fetching students:", err));
 
     res.json({ message: "Tugas berhasil dihapus." });
   } catch (error) {
     console.error("Error deleting tugas:", error);
-    res.status(500).json({ message: "Gagal menghapus tugas." });
+    res.status(500).json({
+      message: "Gagal menghapus tugas.",
+      error: error.message,
+    });
   }
 };
 
