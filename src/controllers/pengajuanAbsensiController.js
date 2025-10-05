@@ -4,10 +4,9 @@ const Absensi = require("../models/Absensi");
 const User = require("../models/User");
 const Kelas = require("../models/Kelas");
 const Jadwal = require("../models/Jadwal");
-const { uploadFromBuffer, deleteFile } = require("../utils/cloudinary"); // Impor utilitas Cloudinary
+const { uploadFromBuffer } = require("../utils/cloudinary");
 const mongoose = require("mongoose");
 
-// Siswa: Membuat pengajuan izin/sakit baru (DIPERBARUI DENGAN CLOUDINARY)
 exports.createPengajuan = async (req, res) => {
   try {
     const { tanggal, keterangan, alasan, jadwalIds } = req.body;
@@ -64,7 +63,6 @@ exports.createPengajuan = async (req, res) => {
       .status(201)
       .json({ message: "Pengajuan berhasil dikirim.", data: pengajuan });
   } catch (error) {
-    // --- PERBAIKAN: Tidak ada lagi file di disk untuk dihapus ---
     res.status(500).json({
       message: "Gagal membuat pengajuan.",
       error: error.message,
@@ -72,7 +70,6 @@ exports.createPengajuan = async (req, res) => {
   }
 };
 
-// Siswa: Melihat riwayat pengajuannya (Tidak berubah)
 exports.getPengajuanSiswa = async (req, res) => {
   try {
     const riwayat = await PengajuanAbsensi.find({ siswa: req.user.id })
@@ -89,7 +86,6 @@ exports.getPengajuanSiswa = async (req, res) => {
   }
 };
 
-// Guru/Admin: Melihat semua pengajuan yang masuk (Tidak berubah)
 exports.getAllPengajuan = async (req, res) => {
   try {
     const { status, tanggal } = req.query;
@@ -121,7 +117,6 @@ exports.getAllPengajuan = async (req, res) => {
   }
 };
 
-// Guru/Admin: Meninjau (menyetujui/menolak) pengajuan (Tidak berubah)
 exports.reviewPengajuan = async (req, res) => {
   try {
     const { id } = req.params;
@@ -143,7 +138,6 @@ exports.reviewPengajuan = async (req, res) => {
         .json({ message: "Pengajuan ini sudah pernah ditinjau." });
     }
 
-    // Autorisasi Wali Kelas
     if (req.user.role !== "super_admin") {
       const siswa = await User.findById(pengajuan.siswa);
       const kelasSiswa = await Kelas.findOne({ siswa: siswa._id });
@@ -158,25 +152,31 @@ exports.reviewPengajuan = async (req, res) => {
     pengajuan.ditinjauOleh = req.user.id;
     await pengajuan.save();
 
+    // --- PERUBAHAN UTAMA: Membuat record Absensi saat disetujui ---
     if (status === "disetujui") {
-      for (const jadwalId of pengajuan.jadwalTerkait) {
-        await Absensi.findOneAndUpdate(
-          {
+      const absensiBulkOps = pengajuan.jadwalTerkait.map((jadwalId) => ({
+        updateOne: {
+          filter: {
             siswa: pengajuan.siswa,
             jadwal: jadwalId,
             tanggal: pengajuan.tanggal,
           },
-          {
+          update: {
             $set: {
               keterangan: pengajuan.keterangan,
-              sesiPresensi: new mongoose.Types.ObjectId(),
-              lokasiSiswa: { latitude: 0, longitude: 0 },
+              pengajuanAbsensi: pengajuan._id, // Menautkan ke pengajuan
+              // Tidak ada sesiPresensi dan lokasiSiswa
             },
           },
-          { upsert: true }
-        );
+          upsert: true,
+        },
+      }));
+
+      if (absensiBulkOps.length > 0) {
+        await Absensi.bulkWrite(absensiBulkOps);
       }
     }
+    // -----------------------------------------------------------
 
     res.json({
       message: `Pengajuan berhasil di-${status}.`,

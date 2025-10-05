@@ -2,16 +2,14 @@
 const SesiPresensi = require("../models/SesiPresensi");
 const Absensi = require("../models/Absensi");
 const Jadwal = require("../models/Jadwal");
-const User = require("../models/User"); // DIUBAH DARI SISWA KE USER
+const User = require("../models/User");
 const ExcelJS = require("exceljs");
 
-// Radius maksimal presensi (dalam meter)
 const MAX_RADIUS = 500;
 
-// Fungsi Haversine untuk menghitung jarak
 const haversineDistance = (coords1, coords2) => {
   const toRad = (value) => (value * Math.PI) / 180;
-  const R = 6371000; // Jari-jari bumi dalam meter
+  const R = 6371000;
 
   const dLat = toRad(coords2.latitude - coords1.latitude);
   const dLon = toRad(coords2.longitude - coords1.longitude);
@@ -50,7 +48,6 @@ exports.checkIn = async (req, res) => {
       });
     }
 
-    // MENGGUNAKAN MODEL USER DENGAN PENGECEKAN ROLE
     const siswa = await User.findById(siswaId);
     if (
       !siswa ||
@@ -69,19 +66,28 @@ exports.checkIn = async (req, res) => {
       tanggal: tanggalHariIni,
     });
 
+    // --- PERUBAHAN UTAMA: Validasi konflik absensi ---
     if (existingAbsensi) {
+      if (
+        existingAbsensi.keterangan === "izin" ||
+        existingAbsensi.keterangan === "sakit"
+      ) {
+        return res.status(400).json({
+          message: `Anda sudah tercatat '${existingAbsensi.keterangan}' untuk pelajaran ini. Tidak dapat melakukan presensi.`,
+        });
+      }
       return res.status(400).json({
         message:
           "Anda sudah melakukan presensi untuk mata pelajaran ini hari ini.",
       });
     }
+    // --------------------------------------------------
 
     const jarak = haversineDistance(
       { latitude, longitude },
       sesiPresensi.lokasi
     );
 
-    // Validasi jarak bisa dinonaktifkan saat development dengan variabel lingkungan
     if (process.env.NODE_ENV === "production" && jarak > MAX_RADIUS) {
       return res.status(403).json({
         message: `Anda berada di luar radius yang diizinkan! Jarak Anda ${jarak.toFixed(
@@ -111,7 +117,6 @@ exports.checkIn = async (req, res) => {
   }
 };
 
-// Get riwayat absensi dengan filter yang lebih baik
 exports.getRiwayatAbsensi = async (req, res) => {
   try {
     const { tanggal, kelasId, mataPelajaranId } = req.query;
@@ -119,12 +124,10 @@ exports.getRiwayatAbsensi = async (req, res) => {
 
     let filter = {};
 
-    // Filter berdasarkan tanggal
     if (tanggal) {
       filter.tanggal = tanggal;
     }
 
-    // Guru hanya bisa melihat absensi dari jadwal yang dia ajar
     const jadwalGuru = await Jadwal.find({
       guru: guruId,
       isActive: true,
@@ -163,7 +166,6 @@ exports.getRiwayatAbsensi = async (req, res) => {
   }
 };
 
-// Update keterangan presensi
 exports.updateKeteranganPresensi = async (req, res) => {
   try {
     const { id } = req.params;
@@ -198,7 +200,6 @@ exports.updateKeteranganPresensi = async (req, res) => {
   }
 };
 
-// Export Excel
 exports.exportAbsensi = async (req, res) => {
   try {
     const { tanggal, kelasId, mataPelajaranId } = req.query;

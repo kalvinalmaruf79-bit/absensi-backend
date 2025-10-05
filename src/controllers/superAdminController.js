@@ -1,3 +1,4 @@
+// src/controllers/superAdminController.js
 const User = require("../models/User");
 const MataPelajaran = require("../models/MataPelajaran");
 const Kelas = require("../models/Kelas");
@@ -16,9 +17,14 @@ const ExcelJS = require("exceljs");
 const fs = require("fs");
 const logActivity = require("../middleware/activityLogger");
 
-// ============= DASHBOARD =============
+// ============= DASHBOARD (IMPROVED) =============
 exports.getDashboard = async (req, res) => {
   try {
+    // --- PERUBAHAN UTAMA: Ambil pengaturan global terlebih dahulu ---
+    const settings = await Settings.getSettings();
+    const { tahunAjaranAktif } = settings;
+    // -----------------------------------------------------------
+
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     sevenDaysAgo.setHours(0, 0, 0, 0);
@@ -37,7 +43,8 @@ exports.getDashboard = async (req, res) => {
       User.countDocuments({ role: "guru", isActive: true }),
       User.countDocuments({ role: "siswa", isActive: true }),
       MataPelajaran.countDocuments({ isActive: true }),
-      Kelas.countDocuments({ isActive: true }),
+      // PERUBAHAN: Hitung kelas yang aktif pada tahun ajaran ini
+      Kelas.countDocuments({ isActive: true, tahunAjaran: tahunAjaranAktif }),
       ActivityLog.aggregate([
         { $match: { createdAt: { $gte: sevenDaysAgo } } },
         {
@@ -71,14 +78,30 @@ exports.getDashboard = async (req, res) => {
         },
         { $sort: { _id: 1 } },
       ]),
+      // PERUBAHAN: Distribusi kelas berdasarkan tahun ajaran aktif
       Kelas.aggregate([
-        { $match: { isActive: true } },
+        { $match: { isActive: true, tahunAjaran: tahunAjaranAktif } },
         { $group: { _id: "$tingkat", count: { $sum: 1 } } },
         { $project: { tingkat: "$_id", count: 1, _id: 0 } },
         { $sort: { tingkat: 1 } },
       ]),
+      // PERUBAHAN: Tren absensi berdasarkan tahun ajaran aktif
       Absensi.aggregate([
-        { $match: { createdAt: { $gte: sevenDaysAgo } } },
+        {
+          $lookup: {
+            from: "jadwals",
+            localField: "jadwal",
+            foreignField: "_id",
+            as: "jadwalInfo",
+          },
+        },
+        { $unwind: "$jadwalInfo" },
+        {
+          $match: {
+            "jadwalInfo.tahunAjaran": tahunAjaranAktif,
+            createdAt: { $gte: sevenDaysAgo },
+          },
+        },
         {
           $group: {
             _id: {
@@ -105,17 +128,31 @@ exports.getDashboard = async (req, res) => {
         },
         { $sort: { date: 1 } },
       ]),
+      // PERUBAHAN: Konten dibuat pada tahun ajaran aktif
       Promise.all([
-        Tugas.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
-        Materi.countDocuments({ createdAt: { $gte: sevenDaysAgo } }),
+        Tugas.countDocuments({
+          tahunAjaran: tahunAjaranAktif,
+          createdAt: { $gte: sevenDaysAgo },
+        }),
+        Materi.countDocuments({ createdAt: { $gte: sevenDaysAgo } }), // Materi tidak terikat tahun ajaran secara strict
       ]).then(([tugas, materi]) => ({ tugas, materi })),
+      // PERUBAHAN: Rasio kehadiran berdasarkan tahun ajaran aktif
       Absensi.aggregate([
+        {
+          $lookup: {
+            from: "jadwals",
+            localField: "jadwal",
+            foreignField: "_id",
+            as: "jadwalInfo",
+          },
+        },
+        { $unwind: "$jadwalInfo" },
+        { $match: { "jadwalInfo.tahunAjaran": tahunAjaranAktif } },
         { $group: { _id: "$keterangan", count: { $sum: 1 } } },
         { $project: { status: "$_id", count: 1, _id: 0 } },
       ]),
     ]);
 
-    // PERBAIKAN: Handle kondisi no data
     const formatRasio = rasioKehadiran.reduce((acc, item) => {
       acc[item.status] = item.count;
       return acc;
@@ -147,8 +184,13 @@ exports.getDashboard = async (req, res) => {
           izin: formatRasio.izin || 0,
           alpa: formatRasio.alpa || 0,
           total: totalAbsensi,
-          isEmpty: totalAbsensi === 0, // Flag untuk frontend
+          isEmpty: totalAbsensi === 0,
         },
+      },
+      settings: {
+        // Kirim juga info settings ke frontend
+        tahunAjaranAktif: settings.tahunAjaranAktif,
+        semesterAktif: settings.semesterAktif,
       },
     });
   } catch (error) {
@@ -171,7 +213,6 @@ exports.createSiswa = [
     try {
       const { name, email, identifier, kelas, password } = req.body;
 
-      // PERBAIKAN: Validasi password dihapus dari sini
       if (!name || !email || !identifier || !kelas) {
         return res.status(400).json({
           message: "Nama, email, identifier, dan kelas wajib diisi.",
@@ -190,7 +231,6 @@ exports.createSiswa = [
         return res.status(400).json({ message: "Kelas tidak ditemukan." });
       }
 
-      // PERBAIKAN: Logika password opsional
       const passwordToHash = password || identifier;
       const isPasswordDefault = !password;
       const hashedPassword = await bcrypt.hash(passwordToHash, 10);
@@ -202,7 +242,7 @@ exports.createSiswa = [
         password: hashedPassword,
         kelas,
         role: "siswa",
-        isPasswordDefault, // Set status password default
+        isPasswordDefault,
       });
       await newSiswa.save();
 
@@ -231,7 +271,6 @@ exports.createGuru = [
   ),
   async (req, res) => {
     try {
-      // PERBAIKAN: Ambil password dari body
       const { name, email, identifier, password } = req.body;
       if (!name || !email || !identifier) {
         return res
@@ -246,7 +285,6 @@ exports.createGuru = [
           .json({ message: "Email atau NIP sudah digunakan." });
       }
 
-      // PERBAIKAN: Logika password opsional
       const passwordToHash = password || identifier;
       const isPasswordDefault = !password;
       const hashedPassword = await bcrypt.hash(passwordToHash, 10);
@@ -273,10 +311,6 @@ exports.createGuru = [
 ];
 
 // ============= USER MANAGEMENT (ADDITIONAL FEATURES) =============
-
-/**
- * @summary Mendapatkan statistik user untuk menentukan keamanan penghapusan
- */
 exports.getUserStats = async (req, res) => {
   try {
     const userId = req.params.id;
@@ -365,9 +399,6 @@ exports.getUserStats = async (req, res) => {
   }
 };
 
-/**
- * @summary Force delete user beserta semua data terkait
- */
 exports.forceDeleteUser = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -384,7 +415,6 @@ exports.forceDeleteUser = async (req, res) => {
       });
     }
 
-    // Hitung data terkait
     let dataRelasi = {};
 
     if (user.role === "guru") {
@@ -431,7 +461,6 @@ exports.forceDeleteUser = async (req, res) => {
       0
     );
 
-    // Konfirmasi diperlukan jika ada data terkait
     if (totalRelasi > 0 && req.query.confirm !== "yes") {
       await session.abortTransaction();
       return res.status(400).json({
@@ -452,17 +481,14 @@ exports.forceDeleteUser = async (req, res) => {
       });
     }
 
-    // Proses penghapusan jika sudah konfirmasi atau tidak ada data terkait
     if (totalRelasi === 0 || req.query.confirm === "yes") {
       if (user.role === "guru") {
-        // Hapus relasi guru dari mata pelajaran
         await MataPelajaran.updateMany(
           { guru: userId },
           { $pull: { guru: userId } },
           { session }
         );
 
-        // Hapus semua data yang dibuat guru
         await Promise.all([
           Jadwal.deleteMany({ guru: userId }, { session }),
           Materi.deleteMany({ guru: userId }, { session }),
@@ -471,7 +497,6 @@ exports.forceDeleteUser = async (req, res) => {
           SesiPresensi.deleteMany({ dibuatOleh: userId }, { session }),
         ]);
       } else if (user.role === "siswa") {
-        // Hapus siswa dari kelas
         if (user.kelas) {
           await Kelas.findByIdAndUpdate(
             user.kelas,
@@ -480,7 +505,6 @@ exports.forceDeleteUser = async (req, res) => {
           );
         }
 
-        // Hapus semua data siswa
         await Promise.all([
           Nilai.deleteMany({ siswa: userId }, { session }),
           Absensi.deleteMany({ siswa: userId }, { session }),
@@ -492,12 +516,8 @@ exports.forceDeleteUser = async (req, res) => {
         ]);
       }
 
-      // Hapus activity logs terkait user
       await ActivityLog.deleteMany({ user: userId }, { session });
-
-      // Hapus user
       await User.findByIdAndDelete(userId).session(session);
-
       await session.commitTransaction();
 
       res.json({
@@ -519,9 +539,6 @@ exports.forceDeleteUser = async (req, res) => {
   }
 };
 
-/**
- * @summary Restore (aktifkan kembali) user yang sudah di-soft delete
- */
 exports.restoreUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -540,7 +557,6 @@ exports.restoreUser = async (req, res) => {
       });
     }
 
-    // Validasi untuk siswa: pastikan kelas masih aktif
     if (user.role === "siswa" && user.kelas) {
       const kelas = await Kelas.findById(user.kelas);
       if (!kelas || !kelas.isActive) {
@@ -551,13 +567,11 @@ exports.restoreUser = async (req, res) => {
         });
       }
 
-      // Tambahkan kembali siswa ke array siswa di kelas
       await Kelas.findByIdAndUpdate(user.kelas, {
         $addToSet: { siswa: user._id },
       });
     }
 
-    // Validasi untuk guru: pastikan mata pelajaran yang diampu masih aktif
     if (user.role === "guru" && user.mataPelajaran.length > 0) {
       const activeMapel = await MataPelajaran.find({
         _id: { $in: user.mataPelajaran },
@@ -602,9 +616,6 @@ exports.restoreUser = async (req, res) => {
 };
 
 // ============= ACADEMIC CYCLE MANAGEMENT (BARU & DIPERBARUI) =============
-/**
- * @summary Memberikan rekomendasi kenaikan kelas berdasarkan data akademik.
- */
 exports.getPromotionRecommendation = async (req, res) => {
   try {
     const { kelasId, tahunAjaran } = req.query;
@@ -616,7 +627,6 @@ exports.getPromotionRecommendation = async (req, res) => {
       });
     }
 
-    // Validasi semester genap
     const settings = await Settings.getSettings();
     if (settings.semesterAktif !== "genap") {
       return res.status(400).json({
@@ -627,7 +637,6 @@ exports.getPromotionRecommendation = async (req, res) => {
       });
     }
 
-    // Ambil aturan akademik
     const rules = await AcademicRules.getRules();
     const {
       minAttendancePercentage,
@@ -635,7 +644,6 @@ exports.getPromotionRecommendation = async (req, res) => {
       passingGrade,
     } = rules.promotion;
 
-    // Ambil data kelas
     const kelas = await Kelas.findById(kelasId).populate(
       "waliKelas",
       "name identifier"
@@ -648,7 +656,6 @@ exports.getPromotionRecommendation = async (req, res) => {
       });
     }
 
-    // Ambil semua siswa aktif di kelas
     const siswaDiKelas = await User.find({
       kelas: kelasId,
       role: "siswa",
@@ -658,7 +665,6 @@ exports.getPromotionRecommendation = async (req, res) => {
     const recommendations = [];
 
     for (const siswa of siswaDiKelas) {
-      // 1. Hitung Rekap Absensi SETAHUN (ganjil + genap)
       const absensiAggregate = await Absensi.aggregate([
         {
           $lookup: {
@@ -702,7 +708,6 @@ exports.getPromotionRecommendation = async (req, res) => {
       const totalAbsensiDicatat =
         totalHadir + totalSakit + totalIzin + totalAlpa;
 
-      // PERBAIKAN: Handle kondisi no data
       const estimasiTotalPertemuan = totalJadwalSetahun * 30;
       let attendancePercentage = null;
       let attendanceStatus = "no_data";
@@ -711,12 +716,10 @@ exports.getPromotionRecommendation = async (req, res) => {
         attendancePercentage = (totalHadir / totalAbsensiDicatat) * 100;
         attendanceStatus = "calculated";
       } else if (estimasiTotalPertemuan > 0) {
-        // Ada jadwal tapi belum ada absensi yang dicatat
         attendancePercentage = 0;
         attendanceStatus = "no_attendance_recorded";
       }
 
-      // 2. Hitung Nilai di Bawah KKM SETAHUN
       const nilaiSetahun = await Nilai.find({
         siswa: siswa._id,
         tahunAjaran: tahunAjaran,
@@ -747,12 +750,10 @@ exports.getPromotionRecommendation = async (req, res) => {
       const nilaiRataRata =
         jumlahMapel > 0 ? totalNilaiRataRata / jumlahMapel : null;
 
-      // 3. Tentukan Rekomendasi
       let systemRecommendation = "Naik Kelas";
       const reasons = [];
       const warnings = [];
 
-      // PERBAIKAN: Handle no data scenarios
       if (
         attendanceStatus === "no_data" ||
         attendanceStatus === "no_attendance_recorded"
@@ -784,12 +785,10 @@ exports.getPromotionRecommendation = async (req, res) => {
         );
       }
 
-      // Override untuk kelas XII
       if (kelas.tingkat === "XII" && systemRecommendation === "Naik Kelas") {
         systemRecommendation = "Lulus";
       }
 
-      // Jika tidak ada data sama sekali
       if (warnings.length === 2) {
         reasons.push(
           "Tidak ada data akademik yang cukup untuk evaluasi otomatis"
@@ -798,7 +797,6 @@ exports.getPromotionRecommendation = async (req, res) => {
         reasons.push("Memenuhi kriteria kenaikan kelas");
       }
 
-      // Tentukan kelas tujuan default
       let recommendedKelasId = null;
       if (systemRecommendation === "Naik Kelas") {
         const nextTingkat = kelas.tingkat === "X" ? "XI" : "XII";
@@ -907,15 +905,6 @@ exports.getPromotionRecommendation = async (req, res) => {
   }
 };
 
-// Helper function untuk generate tahun ajaran berikutnya
-function generateNextTahunAjaran(currentTA) {
-  const [start, end] = currentTA.split("/").map(Number);
-  return `${start + 1}/${end + 1}`;
-}
-
-/**
- * @summary Memproses kenaikan, kelulusan, dan tinggal kelas siswa.
- */
 exports.processPromotion = [
   logActivity("PROCESS_PROMOTION", (req) => {
     const { fromKelasId, tahunAjaran, siswaData } = req.body;
@@ -941,7 +930,6 @@ exports.processPromotion = [
     try {
       const settings = await Settings.getSettings();
 
-      // Validasi: Harus semester genap
       if (settings.semesterAktif !== "genap") {
         throw new Error(
           "Kenaikan kelas hanya dapat dilakukan di semester genap"
@@ -953,7 +941,6 @@ exports.processPromotion = [
         throw new Error("Kelas asal tidak ditemukan.");
       }
 
-      // Untuk kelas XII yang lulus, siapkan tahun ajaran baru
       const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
 
       for (const data of siswaData) {
@@ -965,7 +952,6 @@ exports.processPromotion = [
           continue;
         }
 
-        // Catat riwayat dengan semester genap (akhir tahun)
         const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
           (riwayat) =>
             riwayat.kelas.equals(fromKelasId) &&
@@ -977,7 +963,7 @@ exports.processPromotion = [
           siswa.riwayatKelas.push({
             kelas: fromKelasId,
             tahunAjaran: tahunAjaran,
-            semester: "genap", // Selalu genap saat kenaikan
+            semester: "genap",
           });
         }
 
@@ -988,26 +974,21 @@ exports.processPromotion = [
             );
           }
 
-          // Update kelas siswa
           siswa.kelas = toKelasId;
 
-          // Tambahkan ke kelas baru
           await Kelas.findByIdAndUpdate(
             toKelasId,
             { $addToSet: { siswa: siswaId } },
             { session }
           );
         } else if (status === "Tinggal Kelas") {
-          // Siswa tetap di kelas yang sama, tidak perlu update
-          // Tapi catat di riwayat bahwa dia tinggal kelas
           siswa.riwayatKelas.push({
             kelas: fromKelasId,
             tahunAjaran: nextTahunAjaran,
             semester: "ganjil",
-            notes: "Tinggal Kelas", // Bisa ditambah field notes
+            notes: "Tinggal Kelas",
           });
         } else if (status === "Lulus") {
-          // Siswa lulus - kosongkan kelas dan nonaktifkan
           siswa.kelas = null;
           siswa.isActive = false;
           siswa.graduationYear = parseInt(tahunAjaran.split("/")[1]);
@@ -1016,7 +997,6 @@ exports.processPromotion = [
         await siswa.save({ session });
       }
 
-      // Hapus siswa yang naik/lulus dari kelas lama
       const siswaYangPindahAtauLulus = siswaData
         .filter((s) => s.status === "Naik Kelas" || s.status === "Lulus")
         .map((s) => s.siswaId);

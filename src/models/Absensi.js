@@ -1,18 +1,19 @@
 // models/Absensi.js (Updated)
 const mongoose = require("mongoose");
-const mongoosePaginate = require("mongoose-paginate-v2"); // 1. Impor plugin
+const mongoosePaginate = require("mongoose-paginate-v2");
 
 const absensiSchema = new mongoose.Schema(
   {
     siswa: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "User", // Diubah ke User
+      ref: "User",
       required: true,
     },
+    // PERUBAHAN: Dibuat tidak wajib (required: false) karena absensi dari
+    // pengajuan izin/sakit tidak memiliki sesi QR.
     sesiPresensi: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "SesiPresensi",
-      required: true,
     },
     jadwal: {
       type: mongoose.Schema.Types.ObjectId,
@@ -28,13 +29,21 @@ const absensiSchema = new mongoose.Schema(
       enum: ["hadir", "izin", "sakit", "alpa"],
       default: "hadir",
     },
+    // PERUBAHAN: Dibuat tidak wajib (required: false) karena absensi dari
+    // pengajuan izin/sakit tidak memiliki data lokasi.
     lokasiSiswa: {
-      latitude: { type: Number, required: true },
-      longitude: { type: Number, required: true },
+      latitude: { type: Number },
+      longitude: { type: Number },
     },
     tanggal: {
       type: String, // Format YYYY-MM-DD
       required: true,
+    },
+    // PERUBAHAN BARU: Menambahkan referensi ke dokumen pengajuan absensi
+    // untuk jejak audit yang jelas.
+    pengajuanAbsensi: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PengajuanAbsensi",
     },
   },
   {
@@ -42,7 +51,6 @@ const absensiSchema = new mongoose.Schema(
   }
 );
 
-// 2. Tambahkan plugin ke skema
 absensiSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model("Absensi", absensiSchema);

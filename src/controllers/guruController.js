@@ -683,7 +683,6 @@ exports.exportNilai = async (req, res) => {
   }
 };
 
-// --- FUNGSI BARU DITAMBAHKAN DI SINI ---
 exports.updateNilai = [
   logActivity("UPDATE_NILAI", (req) => `Mengubah nilai ID: ${req.params.id}.`),
   async (req, res) => {
@@ -788,84 +787,136 @@ exports.getNilaiStats = async (req, res) => {
     });
   }
 };
-// ------------------------------------
 
-// ============= ANALISIS KINERJA SISWA (IMPLEMENTASI BARU) =============
+// ============= ANALISIS KINERJA SISWA (IMPLEMENTASI BARU & LENGKAP) =============
 exports.getAnalisisKinerjaSiswa = async (req, res) => {
   try {
     const { siswaId, tahunAjaran, semester } = req.query;
-    if (!siswaId) {
+    if (!siswaId || !tahunAjaran || !semester) {
       return res
         .status(400)
-        .json({ message: "Parameter 'siswaId' wajib diisi." });
+        .json({
+          message:
+            "Parameter 'siswaId', 'tahunAjaran', dan 'semester' wajib diisi.",
+        });
     }
+
     const siswa = await User.findById(siswaId);
-    if (!siswa || siswa.role !== "siswa") {
-      return res.status(404).json({ message: "Siswa tidak ditemukan." });
+    if (!siswa || siswa.role !== "siswa" || !siswa.kelas) {
+      return res
+        .status(404)
+        .json({ message: "Siswa tidak ditemukan atau tidak memiliki kelas." });
     }
-    const trenNilai = await Nilai.aggregate([
-      { $match: { siswa: new mongoose.Types.ObjectId(siswaId) } },
-      {
-        $group: {
-          _id: { tahunAjaran: "$tahunAjaran", semester: "$semester" },
-          rataRata: { $avg: "$nilai" },
-        },
-      },
-      { $sort: { "_id.tahunAjaran": 1, "_id.semester": 1 } },
-      {
-        $project: {
-          _id: 0,
-          periode: { $concat: ["$_id.semester", " ", "$_id.tahunAjaran"] },
-          rataRata: { $round: ["$rataRata", 2] },
-        },
-      },
+
+    // Validasi hak akses guru
+    const isMengajar = await Jadwal.findOne({
+      guru: req.user.id,
+      kelas: siswa.kelas,
+    });
+    if (!isMengajar && req.user.role !== "super_admin") {
+      return res
+        .status(403)
+        .json({ message: "Anda tidak memiliki akses ke data siswa ini." });
+    }
+
+    const objectIdSiswa = new mongoose.Types.ObjectId(siswaId);
+    const objectIdKelas = new mongoose.Types.ObjectId(siswa.kelas);
+
+    // 1. Ambil semua nilai siswa dan kelas pada periode yang sama
+    const [nilaiSiswa, nilaiKelas, absensiSiswa] = await Promise.all([
+      Nilai.find({ siswa: objectIdSiswa, tahunAjaran, semester }).populate(
+        "mataPelajaran",
+        "nama"
+      ),
+      Nilai.find({ kelas: objectIdKelas, tahunAjaran, semester }),
+      Absensi.aggregate([
+        {
+          $match: {
+            siswa: objectIdSiswa,
+            tanggal: { $regex: tahunAjaran.substring(0, 4) },
+          },
+        }, // Filter kasar berdasarkan tahun
+        { $group: { _id: "$keterangan", count: { $sum: 1 } } },
+      ]),
     ]);
-    let perbandinganNilai = [];
-    if (tahunAjaran && semester) {
-      const nilaiSiswaPerJenis = await Nilai.aggregate([
-        {
-          $match: {
-            siswa: new mongoose.Types.ObjectId(siswaId),
-            tahunAjaran: tahunAjaran,
-            semester: semester,
-          },
-        },
-        {
-          $group: {
-            _id: "$jenisPenilaian",
-            rataRata: { $avg: "$nilai" },
-          },
-        },
-      ]);
-      const nilaiKelasPerJenis = await Nilai.aggregate([
-        {
-          $match: {
-            kelas: siswa.kelas,
-            tahunAjaran: tahunAjaran,
-            semester: semester,
-          },
-        },
-        {
-          $group: {
-            _id: "$jenisPenilaian",
-            rataRata: { $avg: "$nilai" },
-          },
-        },
-      ]);
-      const mapKelas = new Map(
-        nilaiKelasPerJenis.map((item) => [item._id, item.rataRata])
-      );
-      perbandinganNilai = nilaiSiswaPerJenis.map((item) => ({
-        jenisPenilaian: item._id,
-        nilaiSiswa: Math.round(item.rataRata * 100) / 100,
-        rataRataKelas: Math.round((mapKelas.get(item._id) || 0) * 100) / 100,
-      }));
+
+    // 2. Kalkulasi Rata-rata Keseluruhan Siswa
+    const totalNilaiSiswa = nilaiSiswa.reduce(
+      (acc, curr) => acc + curr.nilai,
+      0
+    );
+    const rataRataSiswa =
+      nilaiSiswa.length > 0 ? totalNilaiSiswa / nilaiSiswa.length : 0;
+
+    // 3. Kalkulasi Rata-rata per Mata Pelajaran (Siswa vs Kelas)
+    const analisisPerMapel = {};
+
+    // Proses nilai siswa
+    nilaiSiswa.forEach((n) => {
+      const mapelId = n.mataPelajaran._id.toString();
+      if (!analisisPerMapel[mapelId]) {
+        analisisPerMapel[mapelId] = {
+          namaMapel: n.mataPelajaran.nama,
+          nilaiSiswa: [],
+          rataRataSiswa: 0,
+          rataRataKelas: 0,
+        };
+      }
+      analisisPerMapel[mapelId].nilaiSiswa.push(n.nilai);
+    });
+
+    // Proses nilai kelas
+    const nilaiKelasPerMapel = {};
+    nilaiKelas.forEach((n) => {
+      const mapelId = n.mataPelajaran.toString();
+      if (!nilaiKelasPerMapel[mapelId]) {
+        nilaiKelasPerMapel[mapelId] = [];
+      }
+      nilaiKelasPerMapel[mapelId].push(n.nilai);
+    });
+
+    // Gabungkan dan hitung rata-rata
+    for (const mapelId in analisisPerMapel) {
+      const siswaScores = analisisPerMapel[mapelId].nilaiSiswa;
+      analisisPerMapel[mapelId].rataRataSiswa =
+        siswaScores.reduce((a, b) => a + b, 0) / siswaScores.length;
+
+      const kelasScores = nilaiKelasPerMapel[mapelId] || [];
+      if (kelasScores.length > 0) {
+        analisisPerMapel[mapelId].rataRataKelas =
+          kelasScores.reduce((a, b) => a + b, 0) / kelasScores.length;
+      }
     }
+
+    // 4. Format Rekap Absensi
+    const rekapAbsensi = { hadir: 0, sakit: 0, izin: 0, alpa: 0 };
+    absensiSiswa.forEach((item) => {
+      if (rekapAbsensi.hasOwnProperty(item._id)) {
+        rekapAbsensi[item._id] = item.count;
+      }
+    });
+
     res.json({
       message: `Analisis Kinerja untuk ${siswa.name}`,
       data: {
-        trenNilai,
-        perbandinganNilai,
+        infoSiswa: {
+          nama: siswa.name,
+          nis: siswa.identifier,
+        },
+        periode: {
+          tahunAjaran,
+          semester,
+        },
+        kinerjaUmum: {
+          rataRataSiswa: parseFloat(rataRataSiswa.toFixed(2)),
+          totalNilaiDiinput: nilaiSiswa.length,
+        },
+        analisisPerMapel: Object.values(analisisPerMapel).map((item) => ({
+          ...item,
+          rataRataSiswa: parseFloat(item.rataRataSiswa.toFixed(2)),
+          rataRataKelas: parseFloat(item.rataRataKelas.toFixed(2)),
+        })),
+        rekapAbsensi,
       },
     });
   } catch (error) {
@@ -877,6 +928,7 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
   }
 };
 
+// ============= HISTORI AKTIVITAS SISWA =============
 exports.getHistoriAktivitasSiswa = async (req, res) => {
   try {
     const { siswaId } = req.params;
