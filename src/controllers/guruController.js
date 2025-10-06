@@ -396,37 +396,68 @@ exports.getAbsensiBySesi = async (req, res) => {
         .status(400)
         .json({ message: "Kelas, mata pelajaran, dan tanggal wajib diisi." });
     }
+
+    // Validasi jadwal
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
       isActive: true,
     });
+
     if (!jadwal) {
       return res.status(403).json({
         message: "Anda tidak memiliki jadwal mengajar untuk kelas ini.",
       });
     }
-    const absensiRecords = await Absensi.find({
-      jadwal: jadwal._id,
-      tanggal: tanggal,
-    }).select("siswa keterangan");
-    const absensiMap = new Map();
-    absensiRecords.forEach((record) =>
-      absensiMap.set(record.siswa.toString(), record.keterangan)
-    );
+
+    // Ambil SEMUA siswa di kelas
     const semuaSiswa = await User.find({
       kelas: kelasId,
       role: "siswa",
       isActive: true,
-    }).select("name identifier");
-    const daftarHadir = semuaSiswa.map((siswa) => ({
-      siswa,
-      keterangan: absensiMap.get(siswa._id.toString()) || "alpa",
-    }));
+    })
+      .select("name identifier")
+      .sort({ name: 1 });
+
+    // Ambil data absensi yang sudah ada untuk tanggal ini
+    const absensiRecords = await Absensi.find({
+      jadwal: jadwal._id,
+      tanggal: tanggal,
+    }).select("siswa keterangan waktuMasuk");
+
+    // Buat map untuk lookup cepat
+    const absensiMap = new Map();
+    absensiRecords.forEach((record) => {
+      absensiMap.set(record.siswa.toString(), {
+        _id: record._id, // Tambahkan ID untuk update
+        keterangan: record.keterangan,
+        waktuMasuk: record.waktuMasuk,
+      });
+    });
+
+    // Gabungkan data siswa dengan status absensi
+    const daftarHadir = semuaSiswa.map((siswa) => {
+      const absensiData = absensiMap.get(siswa._id.toString());
+      return {
+        _id: absensiData?._id || null, // ID absensi (null jika belum ada)
+        siswa: {
+          _id: siswa._id,
+          name: siswa.name,
+          identifier: siswa.identifier,
+        },
+        keterangan: absensiData?.keterangan || "alpa",
+        waktuMasuk: absensiData?.waktuMasuk || null,
+      };
+    });
+
     res.json(daftarHadir);
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    console.error("Error getAbsensiBySesi:", error);
+    res.status(500).json({
+      message: "Terjadi kesalahan pada server.",
+      error: error.message,
+    });
   }
 };
 

@@ -273,3 +273,62 @@ exports.exportAbsensi = async (req, res) => {
     res.status(500).json({ message: "Gagal ekspor data ke Excel." });
   }
 };
+
+exports.createManualAbsensi = async (req, res) => {
+  try {
+    const { siswaId, jadwalId, keterangan, tanggal } = req.body;
+
+    if (!siswaId || !jadwalId || !keterangan || !tanggal) {
+      return res.status(400).json({
+        message: "Semua field wajib diisi.",
+      });
+    }
+
+    // Validasi guru mengajar di jadwal ini
+    const jadwal = await Jadwal.findOne({
+      _id: jadwalId,
+      guru: req.user.id,
+      isActive: true,
+    });
+
+    if (!jadwal) {
+      return res.status(403).json({
+        message: "Anda tidak memiliki akses untuk jadwal ini.",
+      });
+    }
+
+    // Cek apakah sudah ada record
+    const existing = await Absensi.findOne({
+      siswa: siswaId,
+      jadwal: jadwalId,
+      tanggal: tanggal,
+    });
+
+    if (existing) {
+      return res.status(400).json({
+        message: "Record absensi sudah ada untuk siswa ini.",
+      });
+    }
+
+    // Buat record absensi manual
+    const absensi = new Absensi({
+      siswa: siswaId,
+      jadwal: jadwalId,
+      tanggal: tanggal,
+      keterangan: keterangan,
+      isManual: true, // Flag untuk manual entry
+    });
+
+    await absensi.save();
+
+    res.status(201).json({
+      message: "Absensi manual berhasil ditambahkan.",
+      data: absensi,
+    });
+  } catch (error) {
+    console.error("Error create manual absensi:", error);
+    res.status(500).json({
+      message: "Gagal menambahkan absensi manual.",
+    });
+  }
+};

@@ -7,6 +7,7 @@ const {
   getRiwayatAbsensi,
   updateKeteranganPresensi,
   exportAbsensi,
+  createManualAbsensi, // <-- Tambahkan import ini
 } = require("../controllers/absensiController");
 const {
   authMiddleware,
@@ -28,5 +29,9 @@ router.use("/pengajuan", pengajuanRoutes);
 router.get("/riwayat", authMiddleware, verifyAdminOrGuru, getRiwayatAbsensi);
 router.put("/:id", authMiddleware, verifyAdminOrGuru, updateKeteranganPresensi);
 router.get("/export", authMiddleware, verifyAdminOrGuru, exportAbsensi);
+
+// Create manual absensi (Guru/Admin)
+// Endpoint: POST /api/absensi/manual
+router.post("/manual", authMiddleware, verifyAdminOrGuru, createManualAbsensi);
 
 module.exports = router;
