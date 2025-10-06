@@ -581,22 +581,26 @@ exports.getNilaiSiswa = async (req, res) => {
     const {
       kelasId,
       mataPelajaranId,
+      jenisPenilaian, // Tambahkan parameter ini
       semester,
       tahunAjaran,
       page = 1,
       limit = 10,
     } = req.query;
+
     const jadwal = await Jadwal.findOne({
       guru: req.user.id,
       kelas: kelasId,
       mataPelajaran: mataPelajaranId,
       isActive: true,
     });
+
     if (!jadwal) {
       return res.status(403).json({
         message: "Anda tidak mengajar mata pelajaran ini di kelas tersebut.",
       });
     }
+
     const query = {
       guru: req.user.id,
       kelas: kelasId,
@@ -604,6 +608,12 @@ exports.getNilaiSiswa = async (req, res) => {
       semester,
       tahunAjaran,
     };
+
+    // Tambahkan filter jenis penilaian jika ada
+    if (jenisPenilaian) {
+      query.jenisPenilaian = jenisPenilaian;
+    }
+
     const options = {
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
@@ -613,6 +623,7 @@ exports.getNilaiSiswa = async (req, res) => {
         { path: "mataPelajaran", select: "nama kode" },
       ],
     };
+
     const result = await Nilai.paginate(query, options);
     res.json(result);
   } catch (error) {
@@ -823,12 +834,10 @@ exports.getAnalisisKinerjaSiswa = async (req, res) => {
   try {
     const { siswaId, tahunAjaran, semester } = req.query;
     if (!siswaId || !tahunAjaran || !semester) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "Parameter 'siswaId', 'tahunAjaran', dan 'semester' wajib diisi.",
-        });
+      return res.status(400).json({
+        message:
+          "Parameter 'siswaId', 'tahunAjaran', dan 'semester' wajib diisi.",
+      });
     }
 
     const siswa = await User.findById(siswaId);
