@@ -364,26 +364,34 @@ exports.submitTugas = async (req, res) => {
 exports.getTugasSubmissions = async (req, res) => {
   try {
     const { tugasId } = req.params;
-    const tugas = await Tugas.findById(tugasId).populate(
-      "submissions.siswa",
-      "name identifier"
-    );
+
+    const tugas = await Tugas.findById(tugasId)
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name identifier")
+      .populate("submissions.siswa", "name identifier");
 
     if (!tugas) {
       return res.status(404).json({ message: "Tugas tidak ditemukan." });
     }
-    if (tugas.guru.toString() !== req.user.id) {
+
+    // Pastikan hanya guru yang mengajar bisa akses
+    if (tugas.guru._id.toString() !== req.user.id) {
       return res
         .status(403)
         .json({ message: "Anda tidak memiliki akses ke tugas ini." });
     }
 
+    // Kembalikan submissions langsung sebagai array
     res.json(tugas.submissions);
   } catch (error) {
-    res.status(500).json({ message: "Gagal mengambil data submission." });
+    console.error("Error getting submissions:", error);
+    res.status(500).json({
+      message: "Gagal mengambil data submission.",
+      error: error.message,
+    });
   }
 };
-
 // Grade Submission
 exports.gradeSubmission = async (req, res) => {
   try {
