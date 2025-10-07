@@ -1,6 +1,7 @@
 // controllers/authController.js
 const User = require("../models/User");
-const ActivityLog = require("../models/ActivityLog"); // Impor model baru
+const Kelas = require("../models/Kelas"); // TAMBAHKAN INI
+const ActivityLog = require("../models/ActivityLog");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
@@ -52,16 +53,25 @@ exports.loginUser = async (req, res) => {
       { expiresIn: "1d" }
     );
 
-    // --- LOGGING AKTIVITAS ---
     ActivityLog.create({
       user: user._id,
       action: "USER_LOGIN",
       details: `User login dari perangkat`,
-    }).catch((err) => console.error("Gagal mencatat log login:", err)); // Log error jika gagal
-    // -------------------------
+    }).catch((err) => console.error("Gagal mencatat log login:", err));
 
     const userResponse = user.toObject();
     delete userResponse.password;
+
+    // --- PERUBAHAN UTAMA: Cek status Wali Kelas ---
+    if (user.role === "guru") {
+      const kelasWali = await Kelas.findOne({
+        waliKelas: user._id,
+        isActive: true,
+      });
+      userResponse.isWaliKelas = !!kelasWali; // Tambahkan properti isWaliKelas
+    }
+    // ---------------------------------------------
+
     res.json({
       message: "Login berhasil",
       token,
