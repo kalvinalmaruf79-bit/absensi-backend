@@ -2854,11 +2854,18 @@ exports.updateJadwal = [
         });
       }
 
-      // Validasi waktu
+      // Prepare data yang akan diupdate
+      const newJamMulai = jamMulai || jadwal.jamMulai;
+      const newJamSelesai = jamSelesai || jadwal.jamSelesai;
+      const newKelas = kelas || jadwal.kelas;
+      const newGuru = guru || jadwal.guru;
+      const newHari = hari || jadwal.hari;
+      const newSemester = semester || jadwal.semester;
+      const newTahunAjaran = tahunAjaran || jadwal.tahunAjaran;
+
+      // Validasi format waktu
       if (jamMulai || jamSelesai) {
         const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
-        const newJamMulai = jamMulai || jadwal.jamMulai;
-        const newJamSelesai = jamSelesai || jadwal.jamSelesai;
 
         if (!timeRegex.test(newJamMulai) || !timeRegex.test(newJamSelesai)) {
           return res.status(400).json({
@@ -2882,27 +2889,53 @@ exports.updateJadwal = [
           });
         }
 
-        // PERBAIKAN: Cek conflict dengan query yang lebih efisien
+        // PERBAIKAN: Cek duplicate key terlebih dahulu
+        const duplicateCheck = await Jadwal.findOne({
+          _id: { $ne: jadwalId },
+          kelas: newKelas,
+          hari: newHari,
+          jamMulai: newJamMulai,
+          jamSelesai: newJamSelesai,
+          tahunAjaran: newTahunAjaran,
+          semester: newSemester,
+        }).lean();
+
+        if (duplicateCheck) {
+          return res.status(400).json({
+            success: false,
+            message: `Jadwal dengan kombinasi kelas, hari, waktu, tahun ajaran, dan semester ini sudah ada`,
+            conflictWith: "exact_duplicate",
+            existingJadwal: {
+              id: duplicateCheck._id,
+              kelas: duplicateCheck.kelas,
+              hari: duplicateCheck.hari,
+              jamMulai: duplicateCheck.jamMulai,
+              jamSelesai: duplicateCheck.jamSelesai,
+            },
+          });
+        }
+
+        // Cek time overlap conflict
         const checkConflict = async (targetId, targetField) => {
           const query = {
             _id: { $ne: jadwalId },
             [targetField]: targetId,
-            hari: hari || jadwal.hari,
-            tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
-            semester: semester || jadwal.semester,
+            hari: newHari,
+            tahunAjaran: newTahunAjaran,
+            semester: newSemester,
             isActive: true,
           };
 
-          // KUNCI PERBAIKAN: Gunakan lean() dan limit hasil
           const existingJadwal = await Jadwal.find(query)
             .select("jamMulai jamSelesai")
             .lean()
-            .limit(100); // Batasi hasil untuk menghindari memory issue
+            .limit(100);
 
           for (const existing of existingJadwal) {
             const existingStart = parseTime(existing.jamMulai);
             const existingEnd = parseTime(existing.jamSelesai);
 
+            // Time overlap check (allowing continuous schedules)
             const hasOverlap =
               startMinutes < existingEnd &&
               endMinutes > existingStart &&
@@ -2915,24 +2948,31 @@ exports.updateJadwal = [
           return null;
         };
 
-        const kelasConflict = await checkConflict(
-          kelas || jadwal.kelas,
-          "kelas"
-        );
+        // Cek conflict untuk kelas
+        const kelasConflict = await checkConflict(newKelas, "kelas");
         if (kelasConflict) {
           return res.status(400).json({
             success: false,
-            message: `Jadwal bentrok dengan jadwal kelas yang sudah ada`,
+            message: `Jadwal bentrok dengan jadwal kelas yang sudah ada pada ${newHari} jam ${kelasConflict.jamMulai}-${kelasConflict.jamSelesai}`,
             conflictWith: "kelas",
+            existingJadwal: {
+              jamMulai: kelasConflict.jamMulai,
+              jamSelesai: kelasConflict.jamSelesai,
+            },
           });
         }
 
-        const guruConflict = await checkConflict(guru || jadwal.guru, "guru");
+        // Cek conflict untuk guru
+        const guruConflict = await checkConflict(newGuru, "guru");
         if (guruConflict) {
           return res.status(400).json({
             success: false,
-            message: `Jadwal bentrok dengan jadwal guru yang sudah ada`,
+            message: `Jadwal bentrok dengan jadwal guru yang sudah ada pada ${newHari} jam ${guruConflict.jamMulai}-${guruConflict.jamSelesai}`,
             conflictWith: "guru",
+            existingJadwal: {
+              jamMulai: guruConflict.jamMulai,
+              jamSelesai: guruConflict.jamSelesai,
+            },
           });
         }
       }
@@ -2953,11 +2993,21 @@ exports.updateJadwal = [
       const updatedJadwal = await Jadwal.findByIdAndUpdate(
         jadwalId,
         updateData,
-        { new: true, runValidators: true }
+        {
+          new: true,
+          runValidators: true,
+        }
       )
         .populate("kelas", "nama tingkat jurusan")
         .populate("mataPelajaran", "nama kode")
         .populate("guru", "name identifier");
+
+      if (!updatedJadwal) {
+        return res.status(404).json({
+          success: false,
+          message: "Jadwal tidak ditemukan setelah update.",
+        });
+      }
 
       res.json({
         success: true,
@@ -2966,6 +3016,17 @@ exports.updateJadwal = [
       });
     } catch (error) {
       console.error("Error updating jadwal:", error);
+
+      // Handle MongoDB duplicate key error
+      if (error.code === 11000) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Jadwal dengan kombinasi kelas, hari, waktu, tahun ajaran, dan semester ini sudah ada di sistem.",
+          error: "Duplicate key error",
+        });
+      }
+
       res.status(500).json({
         success: false,
         message: "Terjadi kesalahan pada server.",
@@ -2974,6 +3035,7 @@ exports.updateJadwal = [
     }
   },
 ];
+
 exports.deleteJadwal = [
   logActivity(
     "DELETE_JADWAL",
