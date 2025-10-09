@@ -392,6 +392,7 @@ exports.getTugasSubmissions = async (req, res) => {
     });
   }
 };
+
 // Grade Submission
 exports.gradeSubmission = async (req, res) => {
   try {
@@ -468,5 +469,149 @@ exports.gradeSubmission = async (req, res) => {
   } catch (error) {
     console.error("Error grading submission:", error);
     res.status(500).json({ message: "Gagal menyimpan nilai." });
+  }
+};
+
+exports.getTugasSiswa = async (req, res) => {
+  try {
+    const siswaId = req.user.id;
+    const { status, mataPelajaranId } = req.query;
+
+    // Dapatkan kelas siswa
+    const siswa = await User.findById(siswaId).select("kelas");
+    if (!siswa || !siswa.kelas) {
+      return res.status(404).json({ message: "Data siswa tidak ditemukan." });
+    }
+
+    let filter = { kelas: siswa.kelas };
+    if (mataPelajaranId) {
+      filter.mataPelajaran = mataPelajaranId;
+    }
+
+    const tugas = await Tugas.find(filter)
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name identifier")
+      .populate("submissions.siswa", "name identifier")
+      .sort({ deadline: -1 });
+
+    // Filter berdasarkan status
+    let filteredTugas = [];
+    const now = new Date();
+
+    switch (status) {
+      case "active":
+        // Belum submit dan deadline belum lewat
+        filteredTugas = tugas.filter((t) => {
+          const submitted = t.submissions.some(
+            (sub) => sub.siswa._id.toString() === siswaId
+          );
+          return !submitted && new Date(t.deadline) >= now;
+        });
+        break;
+
+      case "submitted":
+        // Sudah submit tapi belum dinilai
+        filteredTugas = tugas.filter((t) => {
+          const submission = t.submissions.find(
+            (sub) => sub.siswa._id.toString() === siswaId
+          );
+          return submission && submission.nilai === undefined;
+        });
+        break;
+
+      case "graded":
+        // Sudah dinilai
+        filteredTugas = tugas.filter((t) => {
+          const submission = t.submissions.find(
+            (sub) => sub.siswa._id.toString() === siswaId
+          );
+          return submission && submission.nilai !== undefined;
+        });
+        break;
+
+      case "late":
+        // Belum submit dan deadline sudah lewat
+        filteredTugas = tugas.filter((t) => {
+          const submitted = t.submissions.some(
+            (sub) => sub.siswa._id.toString() === siswaId
+          );
+          return !submitted && new Date(t.deadline) < now;
+        });
+        break;
+
+      case "all":
+      default:
+        filteredTugas = tugas;
+        break;
+    }
+
+    res.json(filteredTugas);
+  } catch (error) {
+    console.error("Error getting tugas siswa:", error);
+    res.status(500).json({ message: "Gagal mengambil data tugas." });
+  }
+};
+
+// Update submission (re-upload)
+exports.updateSubmission = async (req, res) => {
+  try {
+    const { id } = req.params; // tugasId
+    const siswaId = req.user.id;
+
+    if (!req.file) {
+      return res.status(400).json({ message: "File tugas wajib diunggah." });
+    }
+
+    const tugas = await Tugas.findById(id);
+    if (!tugas) {
+      return res.status(404).json({ message: "Tugas tidak ditemukan." });
+    }
+
+    // Cek apakah ada submission dari siswa ini
+    const existingSubmission = tugas.submissions.find(
+      (sub) => sub.siswa.toString() === siswaId
+    );
+
+    if (!existingSubmission) {
+      return res
+        .status(404)
+        .json({ message: "Anda belum pernah mengumpulkan tugas ini." });
+    }
+
+    // Jika sudah dinilai, tidak bisa re-upload
+    if (existingSubmission.nilai !== undefined) {
+      return res.status(400).json({
+        message: "Tugas sudah dinilai, tidak dapat diubah.",
+      });
+    }
+
+    // Hapus file lama
+    if (existingSubmission.public_id) {
+      await deleteFile(existingSubmission.public_id);
+    }
+
+    // Upload file baru
+    const result = await uploadFromBuffer(req.file.buffer, "jawaban-tugas");
+
+    // Update submission
+    existingSubmission.url = result.secure_url;
+    existingSubmission.public_id = result.public_id;
+    existingSubmission.fileName = req.file.originalname;
+    existingSubmission.submittedAt = new Date();
+
+    await tugas.save();
+
+    ActivityLog.create({
+      user: siswaId,
+      action: "UPDATE_TUGAS",
+      details: `Mengubah jawaban tugas '${tugas.judul}'`,
+      resourceId: tugas._id,
+    }).catch((err) => console.error("Gagal mencatat log update tugas:", err));
+
+    res.json({ message: "Tugas berhasil diperbarui." });
+  } catch (error) {
+    console.error("Error updating submission:", error);
+    res.status(500).json({ message: "Gagal memperbarui tugas." });
   }
 };

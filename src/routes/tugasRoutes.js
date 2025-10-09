@@ -14,6 +14,8 @@ const {
   submitTugas,
   getTugasSubmissions,
   gradeSubmission,
+  getTugasSiswa,
+  updateSubmission,
 } = require("../controllers/tugasController");
 
 const {
@@ -28,6 +30,8 @@ router.post("/", authMiddleware, verifyGuru, createTugas);
 
 // Get All Tugas (Guru & Siswa)
 router.get("/", authMiddleware, verifyAnyUser, getTugasByKelas);
+// siswa tugas list
+router.get("/siswa/list", authMiddleware, verifySiswa, getTugasSiswa);
 
 // Get Single Tugas by ID (Guru & Siswa)
 router.get("/:id", authMiddleware, verifyAnyUser, getTugasById);
@@ -62,5 +66,11 @@ router.put(
   verifyGuru,
   gradeSubmission
 );
-
+router.put(
+  "/:id/resubmit",
+  authMiddleware,
+  verifySiswa,
+  tugasUploader.single("file"),
+  updateSubmission
+);
 module.exports = router;
