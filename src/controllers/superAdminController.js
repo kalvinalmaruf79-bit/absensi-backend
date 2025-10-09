@@ -2854,6 +2854,7 @@ exports.updateJadwal = [
         });
       }
 
+      // Validasi waktu
       if (jamMulai || jamSelesai) {
         const timeRegex = /^([0-1]?[0-9]|2[0-3]):([0-5][0-9])$/;
         const newJamMulai = jamMulai || jadwal.jamMulai;
@@ -2881,15 +2882,22 @@ exports.updateJadwal = [
           });
         }
 
+        // PERBAIKAN: Cek conflict dengan query yang lebih efisien
         const checkConflict = async (targetId, targetField) => {
-          const existingJadwal = await Jadwal.find({
+          const query = {
             _id: { $ne: jadwalId },
             [targetField]: targetId,
             hari: hari || jadwal.hari,
             tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
             semester: semester || jadwal.semester,
             isActive: true,
-          });
+          };
+
+          // KUNCI PERBAIKAN: Gunakan lean() dan limit hasil
+          const existingJadwal = await Jadwal.find(query)
+            .select("jamMulai jamSelesai")
+            .lean()
+            .limit(100); // Batasi hasil untuk menghindari memory issue
 
           for (const existing of existingJadwal) {
             const existingStart = parseTime(existing.jamMulai);
@@ -2929,19 +2937,22 @@ exports.updateJadwal = [
         }
       }
 
+      // Update jadwal
+      const updateData = {
+        ...(kelas && { kelas }),
+        ...(mataPelajaran && { mataPelajaran }),
+        ...(guru && { guru }),
+        ...(hari && { hari }),
+        ...(jamMulai && { jamMulai }),
+        ...(jamSelesai && { jamSelesai }),
+        ...(semester && { semester }),
+        ...(tahunAjaran && { tahunAjaran }),
+        ...(isActive !== undefined && { isActive }),
+      };
+
       const updatedJadwal = await Jadwal.findByIdAndUpdate(
         jadwalId,
-        {
-          kelas: kelas || jadwal.kelas,
-          mataPelajaran: mataPelajaran || jadwal.mataPelajaran,
-          guru: guru || jadwal.guru,
-          hari: hari || jadwal.hari,
-          jamMulai: jamMulai || jadwal.jamMulai,
-          jamSelesai: jamSelesai || jadwal.jamSelesai,
-          semester: semester || jadwal.semester,
-          tahunAjaran: tahunAjaran || jadwal.tahunAjaran,
-          isActive: isActive !== undefined ? isActive : jadwal.isActive,
-        },
+        updateData,
         { new: true, runValidators: true }
       )
         .populate("kelas", "nama tingkat jurusan")
@@ -2963,7 +2974,6 @@ exports.updateJadwal = [
     }
   },
 ];
-
 exports.deleteJadwal = [
   logActivity(
     "DELETE_JADWAL",

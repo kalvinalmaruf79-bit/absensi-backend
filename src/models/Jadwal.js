@@ -67,4 +67,24 @@ jadwalSchema.index(
 // 2. Tambahkan plugin ke skema
 jadwalSchema.plugin(mongoosePaginate);
 
+// Index untuk optimasi query conflict checking
+jadwalSchema.index({
+  kelas: 1,
+  hari: 1,
+  tahunAjaran: 1,
+  semester: 1,
+  isActive: 1,
+});
+jadwalSchema.index({
+  guru: 1,
+  hari: 1,
+  tahunAjaran: 1,
+  semester: 1,
+  isActive: 1,
+});
+
+// Index tambahan untuk query umum
+jadwalSchema.index({ tahunAjaran: 1, semester: 1, isActive: 1 });
+jadwalSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model("Jadwal", jadwalSchema);
