@@ -1,4 +1,4 @@
-// routes/siswaRoutes.js
+// src/routes/siswaRoutes.js
 const express = require("express");
 const router = express.Router();
 
@@ -6,14 +6,12 @@ const {
   getDashboard,
   getJadwalSiswa,
   getNilaiSiswa,
-  getRiwayatPresensi,
   getTemanSekelas,
   getNotifikasi,
   markNotifikasiAsRead,
   getJadwalMendatang,
   getTugasMendatang,
-  getJadwalByTanggal,
-  getHistoriAktivitas, // Impor fungsi baru
+  getHistoriAktivitas,
 } = require("../controllers/siswaController");
 
 const {
@@ -22,27 +20,18 @@ const {
   checkUserActive,
 } = require("../middleware/authMiddleware");
 
+// Middleware ini akan melindungi semua rute siswa
 router.use(authMiddleware, verifySiswa, checkUserActive);
 
-// Dashboard & Profile
+// Rute-rute utama sesuai dengan Flutter Service Anda
 router.get("/dashboard", getDashboard);
-// --- RUTE BARU UNTUK HISTORI ---
-router.get("/histori-aktivitas", getHistoriAktivitas);
-// -------------------------------
-
-// Notifikasi
-router.get("/notifikasi", getNotifikasi);
-router.patch("/notifikasi/:id/read", markNotifikasiAsRead);
-
-// Jadwal
 router.get("/jadwal", getJadwalSiswa);
 router.get("/jadwal/mendatang", getJadwalMendatang);
-router.get("/jadwal-by-tanggal", getJadwalByTanggal);
-
-// Rute lainnya
 router.get("/tugas/mendatang", getTugasMendatang);
 router.get("/nilai", getNilaiSiswa);
-router.get("/presensi", getRiwayatPresensi);
 router.get("/teman-sekelas", getTemanSekelas);
+router.get("/notifikasi", getNotifikasi);
+router.patch("/notifikasi/:id/read", markNotifikasiAsRead); // Mendukung 'all' atau ID spesifik
+router.get("/histori-aktivitas", getHistoriAktivitas);
 
 module.exports = router;

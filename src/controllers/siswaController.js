@@ -1,257 +1,59 @@
-// controllers/siswaController.js
-const mongoose = require("mongoose");
+// src/controllers/siswaController.js
 const User = require("../models/User");
-const Nilai = require("../models/Nilai");
 const Jadwal = require("../models/Jadwal");
+const Tugas = require("../models/Tugas");
 const Absensi = require("../models/Absensi");
 const Notifikasi = require("../models/Notifikasi");
-const Tugas = require("../models/Tugas");
-const ActivityLog = require("../models/ActivityLog"); // Impor model baru
+const Pengumuman = require("../models/Pengumuman");
+const Materi = require("../models/Materi");
+const Nilai = require("../models/Nilai");
+const ActivityLog = require("../models/ActivityLog");
+const mongoose = require("mongoose");
 
-/**
- * @summary Mengambil histori aktivitas siswa dengan pagination
- */
-exports.getHistoriAktivitas = async (req, res) => {
-  try {
-    const { page = 1, limit = 15 } = req.query;
-    const query = { user: req.user.id };
-    const options = {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      sort: { createdAt: -1 },
-    };
-
-    const histori = await ActivityLog.paginate(query, options);
-    res.json(histori);
-  } catch (error) {
-    res.status(500).json({
-      message: "Gagal mengambil histori aktivitas.",
-      error: error.message,
-    });
-  }
-};
-
-exports.getJadwalByTanggal = async (req, res) => {
-  try {
-    const { tanggal } = req.query;
-    if (!tanggal) {
-      return res
-        .status(400)
-        .json({ message: "Parameter tanggal wajib diisi." });
-    }
-
-    const date = new Date(tanggal);
-    const dayOfWeek = [
-      "minggu",
-      "senin",
-      "selasa",
-      "rabu",
-      "kamis",
-      "jumat",
-      "sabtu",
-    ][date.getUTCDay()];
-
-    const siswa = await User.findById(req.user.id);
-    if (!siswa || !siswa.kelas) {
-      return res.status(404).json({ message: "Siswa atau kelas tidak ada." });
-    }
-
-    const jadwalHariItu = await Jadwal.find({
-      kelas: siswa.kelas,
-      hari: dayOfWeek,
-      isActive: true,
-    })
-      .populate("mataPelajaran", "nama")
-      .sort({ jamMulai: 1 });
-
-    res.json(jadwalHariItu);
-  } catch (error) {
-    res
-      .status(500)
-      .json({ message: "Gagal mengambil jadwal.", error: error.message });
-  }
-};
-
-exports.getTugasMendatang = async (req, res) => {
-  try {
-    const siswa = await User.findById(req.user.id);
-    if (!siswa || !siswa.kelas) {
-      return res
-        .status(404)
-        .json({ message: "Data siswa atau kelas tidak ditemukan." });
-    }
-
-    const { limit = 5 } = req.query;
-
-    const tugasMendatang = await Tugas.find({
-      kelas: siswa.kelas,
-      deadline: { $gte: new Date() },
-      "submissions.siswa": { $ne: siswa._id },
-    })
-      .sort({ deadline: 1 })
-      .limit(parseInt(limit))
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name");
-
-    res.json(tugasMendatang);
-  } catch (error) {
-    res.status(500).json({
-      message: "Gagal mengambil tugas mendatang.",
-      error: error.message,
-    });
-  }
-};
-
-exports.getJadwalMendatang = async (req, res) => {
-  try {
-    const siswa = await User.findById(req.user.id);
-    if (!siswa || !siswa.kelas) {
-      return res
-        .status(404)
-        .json({ message: "Data siswa atau kelas tidak ditemukan." });
-    }
-
-    const now = new Date();
-    const hariIniIndex = now.getDay();
-    const jamSekarang = `${now.getHours().toString().padStart(2, "0")}:${now
-      .getMinutes()
-      .toString()
-      .padStart(2, "0")}`;
-
-    const daftarHari = [
-      "minggu",
-      "senin",
-      "selasa",
-      "rabu",
-      "kamis",
-      "jumat",
-      "sabtu",
-    ];
-    const hariIniNama = daftarHari[hariIniIndex];
-
-    let jadwalMendatang = await Jadwal.findOne({
-      kelas: siswa.kelas,
-      hari: hariIniNama,
-      jamMulai: { $gte: jamSekarang },
-      isActive: true,
-    })
-      .sort({ jamMulai: 1 })
-      .populate("mataPelajaran", "nama kode")
-      .populate("guru", "name");
-
-    if (!jadwalMendatang) {
-      for (let i = 1; i <= 6; i++) {
-        const hariBerikutnyaIndex = (hariIniIndex + i) % 7;
-        const hariBerikutnyaNama = daftarHari[hariBerikutnyaIndex];
-
-        jadwalMendatang = await Jadwal.findOne({
-          kelas: siswa.kelas,
-          hari: hariBerikutnyaNama,
-          isActive: true,
-        })
-          .sort({ jamMulai: 1 })
-          .populate("mataPelajaran", "nama kode")
-          .populate("guru", "name");
-
-        if (jadwalMendatang) {
-          break;
-        }
-      }
-    }
-
-    res.json({ jadwalMendatang: jadwalMendatang || null });
-  } catch (error) {
-    res.status(500).json({
-      message: "Gagal mengambil jadwal mendatang.",
-      error: error.message,
-    });
-  }
-};
-
-/**
- * @summary Mengambil notifikasi siswa dengan pagination
- */
-exports.getNotifikasi = async (req, res) => {
-  try {
-    const { page = 1, limit = 20 } = req.query;
-    const query = { penerima: req.user.id };
-    const options = {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      sort: { createdAt: -1 },
-    };
-    const notifikasi = await Notifikasi.paginate(query, options);
-    res.json(notifikasi);
-  } catch (error) {
-    res.status(500).json({ message: "Gagal mengambil notifikasi." });
-  }
-};
-
-exports.markNotifikasiAsRead = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const filter = { penerima: req.user.id, isRead: false };
-
-    if (id !== "all") {
-      filter._id = id;
-    }
-
-    const result = await Notifikasi.updateMany(filter, {
-      $set: { isRead: true },
-    });
-    res.json({
-      message: `${result.modifiedCount} notifikasi ditandai telah dibaca.`,
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Gagal memperbarui status notifikasi." });
-  }
-};
-
-// --- FUNGSI DASHBOARD DIPERBARUI ---
+// GET /api/siswa/dashboard
 exports.getDashboard = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id).populate(
       "kelas",
       "nama tingkat jurusan"
     );
-    if (!siswa || siswa.role !== "siswa") {
-      return res.status(404).json({ message: "Siswa tidak ditemukan." });
+    if (!siswa || !siswa.kelas) {
+      return res.status(404).json({ message: "Siswa atau kelas tidak ada." });
     }
 
-    // Mengambil semua data secara paralel untuk performa lebih baik
+    const now = new Date();
+    const hariIni = [
+      "minggu",
+      "senin",
+      "selasa",
+      "rabu",
+      "kamis",
+      "jumat",
+      "sabtu",
+    ][now.getDay()];
+    const jamSekarang = `${now.getHours().toString().padStart(2, "0")}:${now
+      .getMinutes()
+      .toString()
+      .padStart(2, "0")}`;
+
     const [jadwalMendatang, tugasMendatang, presensiStats] = await Promise.all([
-      // Jadwal terdekat yang akan datang
       Jadwal.findOne({
         kelas: siswa.kelas._id,
-        hari: ["minggu", "senin", "selasa", "rabu", "kamis", "jumat", "sabtu"][
-          new Date().getDay()
-        ],
-        jamMulai: {
-          $gte: `${new Date()
-            .getHours()
-            .toString()
-            .padStart(2, "0")}:${new Date()
-            .getMinutes()
-            .toString()
-            .padStart(2, "0")}`,
-        },
+        hari: hariIni,
+        jamMulai: { $gte: jamSekarang },
         isActive: true,
       })
         .sort({ jamMulai: 1 })
-        .populate("mataPelajaran", "nama kode")
+        .populate("mataPelajaran", "nama")
         .populate("guru", "name"),
-
-      // 3 tugas terdekat yang belum dikumpulkan
       Tugas.find({
         kelas: siswa.kelas._id,
-        deadline: { $gte: new Date() },
+        deadline: { $gte: now },
         "submissions.siswa": { $ne: siswa._id },
       })
         .sort({ deadline: 1 })
         .limit(3)
         .populate("mataPelajaran", "nama"),
-
-      // Agregasi statistik presensi bulan ini
       Absensi.aggregate([
         {
           $match: {
@@ -278,9 +80,8 @@ exports.getDashboard = async (req, res) => {
         kelas: siswa.kelas,
       },
       jadwalMendatang: jadwalMendatang || null,
-      tugasMendatang, // Menambahkan data tugas ke response
+      tugasMendatang,
       statistikPresensi: {
-        // Data ini siap dibuat grafik lingkaran
         hadir: statsObj.hadir || 0,
         izin: statsObj.izin || 0,
         sakit: statsObj.sakit || 0,
@@ -288,11 +89,13 @@ exports.getDashboard = async (req, res) => {
       },
     });
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    res
+      .status(500)
+      .json({ message: "Gagal memuat dasbor.", error: error.message });
   }
 };
-// ------------------------------------
 
+// GET /api/siswa/jadwal
 exports.getJadwalSiswa = async (req, res) => {
   try {
     const { tahunAjaran, semester } = req.query;
@@ -356,11 +159,104 @@ exports.getJadwalSiswa = async (req, res) => {
   }
 };
 
+// GET /api/siswa/jadwal/mendatang
+exports.getJadwalMendatang = async (req, res) => {
+  try {
+    const siswa = await User.findById(req.user.id);
+    if (!siswa || !siswa.kelas) {
+      return res
+        .status(404)
+        .json({ message: "Data siswa atau kelas tidak ditemukan." });
+    }
+
+    const now = new Date();
+    const hariIniIndex = now.getDay();
+    const jamSekarang = `${now.getHours().toString().padStart(2, "0")}:${now
+      .getMinutes()
+      .toString()
+      .padStart(2, "0")}`;
+    const daftarHari = [
+      "minggu",
+      "senin",
+      "selasa",
+      "rabu",
+      "kamis",
+      "jumat",
+      "sabtu",
+    ];
+    const hariIniNama = daftarHari[hariIniIndex];
+
+    let jadwalMendatang = await Jadwal.findOne({
+      kelas: siswa.kelas,
+      hari: hariIniNama,
+      jamMulai: { $gte: jamSekarang },
+      isActive: true,
+    })
+      .sort({ jamMulai: 1 })
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name");
+
+    if (!jadwalMendatang) {
+      for (let i = 1; i <= 6; i++) {
+        const hariBerikutnyaIndex = (hariIniIndex + i) % 7;
+        const hariBerikutnyaNama = daftarHari[hariBerikutnyaIndex];
+        jadwalMendatang = await Jadwal.findOne({
+          kelas: siswa.kelas,
+          hari: hariBerikutnyaNama,
+          isActive: true,
+        })
+          .sort({ jamMulai: 1 })
+          .populate("mataPelajaran", "nama kode")
+          .populate("guru", "name");
+        if (jadwalMendatang) break;
+      }
+    }
+    res.json({ jadwalMendatang: jadwalMendatang || null });
+  } catch (error) {
+    res
+      .status(500)
+      .json({
+        message: "Gagal mengambil jadwal mendatang.",
+        error: error.message,
+      });
+  }
+};
+
+// GET /api/siswa/tugas/mendatang
+exports.getTugasMendatang = async (req, res) => {
+  try {
+    const siswa = await User.findById(req.user.id);
+    if (!siswa || !siswa.kelas) {
+      return res
+        .status(404)
+        .json({ message: "Data siswa atau kelas tidak ditemukan." });
+    }
+    const { limit = 5 } = req.query;
+    const tugasMendatang = await Tugas.find({
+      kelas: siswa.kelas,
+      deadline: { $gte: new Date() },
+      "submissions.siswa": { $ne: siswa._id },
+    })
+      .sort({ deadline: 1 })
+      .limit(parseInt(limit))
+      .populate("mataPelajaran", "nama kode")
+      .populate("guru", "name");
+    res.json(tugasMendatang);
+  } catch (error) {
+    res
+      .status(500)
+      .json({
+        message: "Gagal mengambil tugas mendatang.",
+        error: error.message,
+      });
+  }
+};
+
+// GET /api/siswa/nilai
 exports.getNilaiSiswa = async (req, res) => {
   try {
-    const { tahunAjaran, semester, page = 1, limit = 100 } = req.query; // Limit tinggi untuk 'semua' nilai per semester
+    const { tahunAjaran, semester, page = 1, limit = 100 } = req.query;
     let filter = { siswa: req.user.id };
-
     if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
     if (semester) filter.semester = semester;
 
@@ -373,7 +269,6 @@ exports.getNilaiSiswa = async (req, res) => {
         { path: "guru", select: "name" },
       ],
     };
-
     const nilai = await Nilai.paginate(filter, options);
     res.json(nilai);
   } catch (error) {
@@ -381,33 +276,7 @@ exports.getNilaiSiswa = async (req, res) => {
   }
 };
 
-/**
- * @summary Mengambil riwayat presensi siswa dengan pagination
- */
-exports.getRiwayatPresensi = async (req, res) => {
-  try {
-    const { page = 1, limit = 15 } = req.query;
-    const query = { siswa: req.user.id };
-    const options = {
-      page: parseInt(page, 10),
-      limit: parseInt(limit, 10),
-      sort: { createdAt: -1 },
-      populate: {
-        path: "jadwal",
-        populate: {
-          path: "mataPelajaran guru kelas",
-          select: "nama kode name tingkat jurusan",
-        },
-      },
-    };
-
-    const presensi = await Absensi.paginate(query, options);
-    res.json(presensi);
-  } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
-  }
-};
-
+// GET /api/siswa/teman-sekelas
 exports.getTemanSekelas = async (req, res) => {
   try {
     const siswa = await User.findById(req.user.id);
@@ -416,7 +285,6 @@ exports.getTemanSekelas = async (req, res) => {
         .status(400)
         .json({ message: "Siswa tidak ditemukan atau belum memiliki kelas." });
     }
-
     const temanSekelas = await User.find({
       kelas: siswa.kelas,
       _id: { $ne: siswa._id },
@@ -425,9 +293,66 @@ exports.getTemanSekelas = async (req, res) => {
     })
       .select("name identifier")
       .sort({ name: 1 });
-
     res.json(temanSekelas);
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
+  }
+};
+
+// GET /api/siswa/notifikasi
+exports.getNotifikasi = async (req, res) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const query = { penerima: req.user.id };
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+    };
+    const notifikasi = await Notifikasi.paginate(query, options);
+    res.json(notifikasi);
+  } catch (error) {
+    res.status(500).json({ message: "Gagal mengambil notifikasi." });
+  }
+};
+
+// PATCH /api/siswa/notifikasi/:id/read
+exports.markNotifikasiAsRead = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const filter = { penerima: req.user.id, isRead: false };
+    if (id !== "all") {
+      filter._id = id;
+    }
+    const result = await Notifikasi.updateMany(filter, {
+      $set: { isRead: true },
+    });
+    res.json({
+      message: `${result.modifiedCount} notifikasi ditandai telah dibaca.`,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Gagal memperbarui status notifikasi." });
+  }
+};
+
+// GET /api/siswa/histori-aktivitas
+exports.getHistoriAktivitas = async (req, res) => {
+  try {
+    const { page = 1, limit = 15 } = req.query;
+    const query = { user: req.user.id };
+    const options = {
+      page: parseInt(page, 10),
+      limit: parseInt(limit, 10),
+      sort: { createdAt: -1 },
+    };
+    const histori = await ActivityLog.paginate(query, options);
+    res.json(histori);
+  } catch (error) {
+    res
+      .status(500)
+      .json({
+        message: "Gagal mengambil histori aktivitas.",
+        error: error.message,
+      });
   }
 };
