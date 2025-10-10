@@ -249,10 +249,12 @@ exports.getTugasMendatang = async (req, res) => {
 };
 
 // GET /api/siswa/nilai
+
 exports.getNilaiSiswa = async (req, res) => {
   try {
     const { tahunAjaran, semester, page = 1, limit = 100 } = req.query;
     let filter = { siswa: req.user.id };
+
     if (tahunAjaran) filter.tahunAjaran = tahunAjaran;
     if (semester) filter.semester = semester;
 
@@ -263,12 +265,171 @@ exports.getNilaiSiswa = async (req, res) => {
       populate: [
         { path: "mataPelajaran", select: "nama kode" },
         { path: "guru", select: "name" },
+        { path: "kelas", select: "nama tingkat jurusan" },
+        { path: "tugas", select: "judul" }, // Tambahan untuk relasi tugas
       ],
     };
+
     const nilai = await Nilai.paginate(filter, options);
     res.json(nilai);
   } catch (error) {
-    res.status(500).json({ message: "Terjadi kesalahan pada server." });
+    res.status(500).json({
+      message: "Gagal mengambil nilai.",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/siswa/nilai/statistik
+// Mengambil statistik nilai per mata pelajaran untuk semester tertentu
+exports.getStatistikNilai = async (req, res) => {
+  try {
+    const { tahunAjaran, semester } = req.query;
+
+    if (!tahunAjaran || !semester) {
+      return res.status(400).json({
+        message: "Parameter tahunAjaran dan semester wajib diisi.",
+      });
+    }
+
+    const statistik = await Nilai.aggregate([
+      {
+        $match: {
+          siswa: new mongoose.Types.ObjectId(req.user.id),
+          tahunAjaran,
+          semester,
+        },
+      },
+      {
+        $group: {
+          _id: "$mataPelajaran",
+          rataRata: { $avg: "$nilai" },
+          nilaiTertinggi: { $max: "$nilai" },
+          nilaiTerendah: { $min: "$nilai" },
+          jumlahPenilaian: { $count: {} },
+          jenisNilai: {
+            $push: {
+              jenis: "$jenisPenilaian",
+              nilai: "$nilai",
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: "matapelajarans",
+          localField: "_id",
+          foreignField: "_id",
+          as: "mataPelajaran",
+        },
+      },
+      {
+        $unwind: "$mataPelajaran",
+      },
+      {
+        $project: {
+          _id: 0,
+          mataPelajaran: {
+            _id: "$mataPelajaran._id",
+            nama: "$mataPelajaran.nama",
+            kode: "$mataPelajaran.kode",
+          },
+          rataRata: { $round: ["$rataRata", 2] },
+          nilaiTertinggi: 1,
+          nilaiTerendah: 1,
+          jumlahPenilaian: 1,
+          jenisNilai: 1,
+        },
+      },
+      {
+        $sort: { "mataPelajaran.nama": 1 },
+      },
+    ]);
+
+    // Hitung rata-rata keseluruhan
+    const rataRataKeseluruhan =
+      statistik.length > 0
+        ? statistik.reduce((sum, item) => sum + item.rataRata, 0) /
+          statistik.length
+        : 0;
+
+    res.json({
+      tahunAjaran,
+      semester,
+      rataRataKeseluruhan: parseFloat(rataRataKeseluruhan.toFixed(2)),
+      perMataPelajaran: statistik,
+    });
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal mengambil statistik nilai.",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/siswa/nilai/ringkasan
+// Mengambil ringkasan nilai untuk semua semester yang pernah dijalani
+exports.getRingkasanNilai = async (req, res) => {
+  try {
+    const siswa = await User.findById(req.user.id).populate("kelas");
+
+    if (!siswa) {
+      return res.status(404).json({ message: "Siswa tidak ditemukan." });
+    }
+
+    // Kumpulkan semua periode (tahun ajaran + semester) yang pernah dijalani
+    const periodeSet = new Set();
+
+    // Dari riwayat kelas
+    siswa.riwayatKelas.forEach((riwayat) => {
+      periodeSet.add(`${riwayat.tahunAjaran}|${riwayat.semester}`);
+    });
+
+    // Dari kelas aktif
+    if (siswa.kelas && siswa.kelas.tahunAjaran) {
+      periodeSet.add(`${siswa.kelas.tahunAjaran}|ganjil`);
+      periodeSet.add(`${siswa.kelas.tahunAjaran}|genap`);
+    }
+
+    // Ambil nilai untuk setiap periode
+    const ringkasan = [];
+    for (const periode of Array.from(periodeSet)) {
+      const [tahunAjaran, semester] = periode.split("|");
+
+      const nilaiList = await Nilai.find({
+        siswa: req.user.id,
+        tahunAjaran,
+        semester,
+      }).select("nilai");
+
+      if (nilaiList.length > 0) {
+        const totalNilai = nilaiList.reduce((sum, n) => sum + n.nilai, 0);
+        const rataRata = totalNilai / nilaiList.length;
+
+        ringkasan.push({
+          tahunAjaran,
+          semester,
+          rataRata: parseFloat(rataRata.toFixed(2)),
+          jumlahNilai: nilaiList.length,
+        });
+      }
+    }
+
+    // Urutkan dari terbaru
+    ringkasan.sort((a, b) => {
+      if (a.tahunAjaran > b.tahunAjaran) return -1;
+      if (a.tahunAjaran < b.tahunAjaran) return 1;
+      if (a.semester > b.semester) return -1;
+      if (a.semester < b.semester) return 1;
+      return 0;
+    });
+
+    res.json(ringkasan);
+  } catch (error) {
+    res.status(500).json({
+      message: "Gagal mengambil ringkasan nilai.",
+      error: error.message,
+    });
   }
 };
 

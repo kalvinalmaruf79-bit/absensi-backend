@@ -13,6 +13,8 @@ const {
   getTugasMendatang,
   getHistoriAktivitas,
   getMataPelajaranSiswa,
+  getStatistikNilai,
+  getRingkasanNilai,
 } = require("../controllers/siswaController");
 
 const {
@@ -29,6 +31,9 @@ router.get("/dashboard", getDashboard);
 router.get("/jadwal", getJadwalSiswa);
 router.get("/jadwal/mendatang", getJadwalMendatang);
 router.get("/tugas/mendatang", getTugasMendatang);
+router.get("/nilai/statistik", getStatistikNilai); // Harus sebelum /nilai/:id
+router.get("/nilai/ringkasan", getRingkasanNilai); // Harus sebelum /nilai/:id
+
 router.get("/nilai", getNilaiSiswa);
 router.get("/teman-sekelas", getTemanSekelas);
 router.get("/notifikasi", getNotifikasi);
