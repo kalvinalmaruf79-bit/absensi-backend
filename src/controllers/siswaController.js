@@ -213,12 +213,10 @@ exports.getJadwalMendatang = async (req, res) => {
     }
     res.json({ jadwalMendatang: jadwalMendatang || null });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Gagal mengambil jadwal mendatang.",
-        error: error.message,
-      });
+    res.status(500).json({
+      message: "Gagal mengambil jadwal mendatang.",
+      error: error.message,
+    });
   }
 };
 
@@ -243,12 +241,10 @@ exports.getTugasMendatang = async (req, res) => {
       .populate("guru", "name");
     res.json(tugasMendatang);
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Gagal mengambil tugas mendatang.",
-        error: error.message,
-      });
+    res.status(500).json({
+      message: "Gagal mengambil tugas mendatang.",
+      error: error.message,
+    });
   }
 };
 
@@ -348,11 +344,57 @@ exports.getHistoriAktivitas = async (req, res) => {
     const histori = await ActivityLog.paginate(query, options);
     res.json(histori);
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Gagal mengambil histori aktivitas.",
-        error: error.message,
-      });
+    res.status(500).json({
+      message: "Gagal mengambil histori aktivitas.",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/siswa/mata-pelajaran
+// Mengambil daftar mata pelajaran yang diajarkan di kelas siswa
+exports.getMataPelajaranSiswa = async (req, res) => {
+  try {
+    const siswa = await User.findById(req.user.id).populate("kelas");
+
+    if (!siswa || !siswa.kelas) {
+      return res
+        .status(404)
+        .json({ message: "Data siswa atau kelas tidak ditemukan." });
+    }
+
+    // Cari jadwal aktif untuk kelas siswa
+    const jadwalList = await Jadwal.find({
+      kelas: siswa.kelas._id,
+      isActive: true,
+    })
+      .populate("mataPelajaran", "nama kode _id")
+      .select("mataPelajaran");
+
+    // Ambil unique mata pelajaran menggunakan Map
+    const mataPelajaranMap = new Map();
+    jadwalList.forEach((jadwal) => {
+      if (jadwal.mataPelajaran) {
+        const mapel = jadwal.mataPelajaran;
+        if (!mataPelajaranMap.has(mapel._id.toString())) {
+          mataPelajaranMap.set(mapel._id.toString(), {
+            _id: mapel._id,
+            nama: mapel.nama,
+            kode: mapel.kode,
+          });
+        }
+      }
+    });
+
+    // Konversi Map menjadi array
+    const mataPelajaran = Array.from(mataPelajaranMap.values());
+
+    res.json(mataPelajaran);
+  } catch (error) {
+    console.error("Error getting mata pelajaran siswa:", error);
+    res.status(500).json({
+      message: "Gagal mengambil mata pelajaran.",
+      error: error.message,
+    });
   }
 };

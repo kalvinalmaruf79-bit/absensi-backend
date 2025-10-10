@@ -12,6 +12,7 @@ const {
   getJadwalMendatang,
   getTugasMendatang,
   getHistoriAktivitas,
+  getMataPelajaranSiswa,
 } = require("../controllers/siswaController");
 
 const {
@@ -31,7 +32,10 @@ router.get("/tugas/mendatang", getTugasMendatang);
 router.get("/nilai", getNilaiSiswa);
 router.get("/teman-sekelas", getTemanSekelas);
 router.get("/notifikasi", getNotifikasi);
-router.patch("/notifikasi/:id/read", markNotifikasiAsRead); // Mendukung 'all' atau ID spesifik
+router.patch("/notifikasi/:id/read", markNotifikasiAsRead);
 router.get("/histori-aktivitas", getHistoriAktivitas);
+
+// Route baru untuk mata pelajaran siswa
+router.get("/mata-pelajaran", getMataPelajaranSiswa);
 
 module.exports = router;

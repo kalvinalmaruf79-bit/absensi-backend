@@ -94,6 +94,8 @@ exports.getMateri = async (req, res) => {
 
     const materi = await Materi.find(filter)
       .populate("guru", "name")
+      .populate("mataPelajaran", "nama kode")
+      .populate("kelas", "nama tingkat jurusan")
       .sort({ createdAt: -1 });
 
     res.json(materi);
@@ -108,19 +110,26 @@ exports.getMateriById = async (req, res) => {
     const { id } = req.params;
     const materi = await Materi.findById(id)
       .populate("guru", "name")
-      .populate("kelas", "nama")
-      .populate("mataPelajaran", "nama");
+      .populate("kelas", "nama tingkat jurusan")
+      .populate("mataPelajaran", "nama kode");
 
     if (!materi) {
       return res.status(404).json({ message: "Materi tidak ditemukan." });
     }
 
-    // Validasi akses
+    // Validasi akses untuk siswa - hanya bisa lihat yang published
+    if (req.user.role === "siswa" && !materi.isPublished) {
+      return res.status(403).json({
+        message: "Materi ini belum dipublikasikan.",
+      });
+    }
+
+    // Validasi akses untuk guru
     if (
       req.user.role === "guru" &&
       materi.guru._id.toString() !== req.user.id
     ) {
-      // Izinkan jika guru masih mengajar di kelas & mapel tersebut (meski materi dibuat guru lain)
+      // Izinkan jika guru masih mengajar di kelas & mapel tersebut
       const isTeaching = await Jadwal.findOne({
         guru: req.user.id,
         kelas: materi.kelas._id,
@@ -137,6 +146,116 @@ exports.getMateriById = async (req, res) => {
     res.json(materi);
   } catch (error) {
     console.error("Error getting materi by id:", error);
+    res.status(500).json({ message: "Gagal mengambil materi." });
+  }
+};
+
+exports.getMateriByMataPelajaran = async (req, res) => {
+  try {
+    const { mataPelajaranId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+
+    // Untuk siswa, ambil kelas dari user
+    let kelasId;
+    if (req.user.role === "siswa") {
+      const siswa = await require("../models/User")
+        .findById(req.user.id)
+        .select("kelas");
+
+      if (!siswa || !siswa.kelas) {
+        return res.status(400).json({
+          message: "Data kelas siswa tidak ditemukan.",
+        });
+      }
+      kelasId = siswa.kelas;
+    }
+
+    let filter = {
+      mataPelajaran: mataPelajaranId,
+    };
+
+    if (req.user.role === "siswa") {
+      filter.isPublished = true;
+      filter.kelas = kelasId;
+    }
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort: { createdAt: -1 },
+      populate: [
+        { path: "guru", select: "name" },
+        { path: "mataPelajaran", select: "nama kode" },
+        { path: "kelas", select: "nama tingkat jurusan" },
+      ],
+    };
+
+    const result = await Materi.paginate(filter, options);
+
+    res.json({
+      docs: result.docs,
+      totalDocs: result.totalDocs,
+      limit: result.limit,
+      page: result.page,
+      totalPages: result.totalPages,
+      hasNextPage: result.hasNextPage,
+      hasPrevPage: result.hasPrevPage,
+    });
+  } catch (error) {
+    console.error("Error getting materi by mata pelajaran:", error);
+    res.status(500).json({ message: "Gagal mengambil materi." });
+  }
+};
+
+exports.getMateriSiswa = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, mataPelajaranId } = req.query;
+
+    // Ambil kelas siswa
+    const siswa = await require("../models/User")
+      .findById(req.user.id)
+      .select("kelas");
+
+    if (!siswa || !siswa.kelas) {
+      return res.status(400).json({
+        message: "Data kelas siswa tidak ditemukan.",
+      });
+    }
+
+    let filter = {
+      kelas: siswa.kelas,
+      isPublished: true,
+    };
+
+    // Filter berdasarkan mata pelajaran jika disediakan
+    if (mataPelajaranId) {
+      filter.mataPelajaran = mataPelajaranId;
+    }
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort: { createdAt: -1 },
+      populate: [
+        { path: "guru", select: "name" },
+        { path: "mataPelajaran", select: "nama kode" },
+        { path: "kelas", select: "nama tingkat jurusan" },
+      ],
+    };
+
+    const result = await Materi.paginate(filter, options);
+
+    res.json({
+      docs: result.docs,
+      totalDocs: result.totalDocs,
+      limit: result.limit,
+      page: result.page,
+      totalPages: result.totalPages,
+      hasNextPage: result.hasNextPage,
+      hasPrevPage: result.hasPrevPage,
+    });
+  } catch (error) {
+    console.error("Error getting materi siswa:", error);
     res.status(500).json({ message: "Gagal mengambil materi." });
   }
 };
@@ -175,7 +294,7 @@ exports.updateMateri = async (req, res) => {
   let newFilesToSave = [];
   try {
     const { id } = req.params;
-    const { judul, deskripsi, parsedLinks, mataPelajaran, kelas } = req.body; // Tambahkan mapel & kelas
+    const { judul, deskripsi, parsedLinks, mataPelajaran, kelas } = req.body;
 
     const materi = await Materi.findById(id);
 
@@ -189,7 +308,7 @@ exports.updateMateri = async (req, res) => {
         .json({ message: "Anda tidak berhak mengubah materi ini." });
     }
 
-    // --- PERUBAHAN UTAMA: Validasi hak akses jika kelas atau mapel diubah ---
+    // Validasi hak akses jika kelas atau mapel diubah
     const targetKelas = kelas || materi.kelas;
     const targetMataPelajaran = mataPelajaran || materi.mataPelajaran;
 
@@ -214,7 +333,6 @@ exports.updateMateri = async (req, res) => {
       materi.kelas = targetKelas;
       materi.mataPelajaran = targetMataPelajaran;
     }
-    // ---------------------------------------------------------------------
 
     // Update basic info
     materi.judul = judul || materi.judul;
@@ -327,7 +445,6 @@ exports.deleteMateri = async (req, res) => {
       }
     }
 
-    // Menggunakan deleteOne() yang merupakan method instance dari Mongoose 6+
     await materi.deleteOne();
 
     res.json({ message: "Materi dan semua file terkait berhasil dihapus." });

@@ -7,6 +7,7 @@ const {
   authMiddleware,
   verifyGuru,
   verifyAnyUser,
+  verifySiswa,
 } = require("../middleware/authMiddleware");
 
 // Setup uploader untuk materi dengan limit 10MB dan tipe file yang sesuai
@@ -52,10 +53,25 @@ router.post(
   materiController.createMateri
 );
 
-// @route   GET /api/materi
-// @desc    Get materi by kelas and mataPelajaran
+// @route   GET /api/materi/siswa
+// @desc    Get all materi untuk siswa (published only, filtered by kelas siswa)
+// @access  Private/Siswa
+router.get(
+  "/siswa",
+  authMiddleware,
+  verifySiswa,
+  materiController.getMateriSiswa
+);
+
+// @route   GET /api/materi/mata-pelajaran/:mataPelajaranId
+// @desc    Get materi by mata pelajaran (with pagination)
 // @access  Private
-router.get("/", authMiddleware, verifyAnyUser, materiController.getMateri);
+router.get(
+  "/mata-pelajaran/:mataPelajaranId",
+  authMiddleware,
+  verifyAnyUser,
+  materiController.getMateriByMataPelajaran
+);
 
 // @route   GET /api/materi/:id
 // @desc    Get materi by ID
@@ -66,6 +82,11 @@ router.get(
   verifyAnyUser,
   materiController.getMateriById
 );
+
+// @route   GET /api/materi
+// @desc    Get materi by kelas and mataPelajaran
+// @access  Private
+router.get("/", authMiddleware, verifyAnyUser, materiController.getMateri);
 
 // @route   PUT /api/materi/:id
 // @desc    Update materi (Guru only)
