@@ -1,4 +1,4 @@
-// controllers/qrController.js - Fixed Version
+// controllers/qrController.js - Fixed Timezone Version
 const QRCode = require("qrcode");
 const Jimp = require("jimp");
 const path = require("path");
@@ -37,9 +37,15 @@ exports.generateQR = async (req, res) => {
       });
     }
 
-    // --- VALIDASI WAKTU DAN HARI PEMBUATAN SESI ---
-    const now = new Date();
-    const hariIni = [
+    // --- VALIDASI WAKTU DAN HARI PEMBUATAN SESI (FIXED TIMEZONE) ---
+
+    // Konversi ke WIB (UTC+7)
+    const nowUTC = new Date();
+    const WIB_OFFSET = 7 * 60; // 7 jam dalam menit
+    const nowWIB = new Date(nowUTC.getTime() + WIB_OFFSET * 60 * 1000);
+
+    // Array hari dalam bahasa Indonesia
+    const hariArray = [
       "minggu",
       "senin",
       "selasa",
@@ -47,12 +53,19 @@ exports.generateQR = async (req, res) => {
       "kamis",
       "jumat",
       "sabtu",
-    ][now.getDay()];
+    ];
+    const hariIni = hariArray[nowWIB.getUTCDay()];
+
+    console.log("DEBUG Timezone:");
+    console.log("- UTC Time:", nowUTC.toISOString());
+    console.log("- WIB Time:", nowWIB.toISOString());
+    console.log("- Hari ini:", hariIni);
+    console.log("- Jadwal hari:", jadwal.hari);
 
     // 1. Cek apakah hari ini sesuai dengan jadwal
     if (jadwal.hari !== hariIni) {
       return res.status(403).json({
-        message: `Jadwal ini hanya untuk hari ${jadwal.hari}. Anda tidak dapat membuat sesi hari ini.`,
+        message: `Jadwal ini hanya untuk hari ${jadwal.hari}. Hari ini adalah ${hariIni}.`,
       });
     }
 
@@ -60,31 +73,60 @@ exports.generateQR = async (req, res) => {
     const [startHour, startMinute] = jadwal.jamMulai.split(":").map(Number);
     const [endHour, endMinute] = jadwal.jamSelesai.split(":").map(Number);
 
-    const startTime = new Date(now);
-    startTime.setHours(startHour, startMinute, 0, 0);
+    // Buat waktu mulai dan selesai dalam WIB
+    const startTime = new Date(nowWIB);
+    startTime.setUTCHours(startHour, startMinute, 0, 0);
 
-    const endTime = new Date(now);
-    endTime.setHours(endHour, endMinute, 0, 0);
+    const endTime = new Date(nowWIB);
+    endTime.setUTCHours(endHour, endMinute, 0, 0);
 
-    if (now < startTime || now > endTime) {
+    console.log("DEBUG Jam:");
+    console.log(
+      "- Jam Mulai:",
+      startTime.toISOString(),
+      `(${jadwal.jamMulai})`
+    );
+    console.log("- Jam Sekarang:", nowWIB.toISOString());
+    console.log(
+      "- Jam Selesai:",
+      endTime.toISOString(),
+      `(${jadwal.jamSelesai})`
+    );
+
+    if (nowWIB < startTime || nowWIB > endTime) {
       return res.status(403).json({
-        message: `Sesi presensi hanya dapat dibuat selama jam pelajaran berlangsung (${jadwal.jamMulai} - ${jadwal.jamSelesai}).`,
+        message: `Sesi presensi hanya dapat dibuat selama jam pelajaran berlangsung (${
+          jadwal.jamMulai
+        } - ${jadwal.jamSelesai} WIB). Sekarang: ${nowWIB
+          .getUTCHours()
+          .toString()
+          .padStart(2, "0")}:${nowWIB
+          .getUTCMinutes()
+          .toString()
+          .padStart(2, "0")} WIB`,
       });
     }
     // --- AKHIR DARI VALIDASI WAKTU ---
 
     const kodeUnik = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const tanggalHariIni = new Date().toISOString().split("T")[0];
+
+    // Format tanggal dalam WIB
+    const year = nowWIB.getUTCFullYear();
+    const month = String(nowWIB.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(nowWIB.getUTCDate()).padStart(2, "0");
+    const tanggalHariIni = `${year}-${month}-${day}`;
+
+    console.log("- Tanggal (WIB):", tanggalHariIni);
 
     // Cek apakah sudah ada sesi aktif untuk jadwal ini hari ini
     const existingSesi = await SesiPresensi.findOne({
       jadwal: jadwalId,
       tanggal: tanggalHariIni,
       isActive: true,
-      expiredAt: { $gt: new Date() },
+      expiredAt: { $gt: nowUTC }, // Bandingkan dengan UTC untuk database
     });
 
-    // PERUBAHAN UTAMA: Jika sesi sudah ada, kembalikan data sesi tersebut
+    // Jika sesi sudah ada, kembalikan data sesi tersebut
     if (existingSesi) {
       // Generate QR Code dari sesi yang sudah ada
       const qrData = {
@@ -118,7 +160,7 @@ exports.generateQR = async (req, res) => {
 
       return res.status(200).json({
         message: "Sesi presensi sudah aktif.",
-        isExisting: true, // Flag untuk frontend
+        isExisting: true,
         qrCode: qrImageData,
         kodeUnik: existingSesi.kodeUnik,
         expiredAt: existingSesi.expiredAt,
@@ -130,7 +172,7 @@ exports.generateQR = async (req, res) => {
     }
 
     // Buat sesi presensi baru jika belum ada
-    const expiredAt = new Date();
+    const expiredAt = new Date(nowUTC);
     expiredAt.setMinutes(expiredAt.getMinutes() + 30);
 
     const sesiPresensi = new SesiPresensi({
@@ -173,6 +215,8 @@ exports.generateQR = async (req, res) => {
       "base64"
     )}`;
 
+    console.log("✅ Sesi presensi berhasil dibuat!");
+
     res.status(201).json({
       message: "QR Code berhasil dibuat.",
       isExisting: false,
@@ -193,17 +237,26 @@ exports.generateQR = async (req, res) => {
   }
 };
 
-// TAMBAHAN: Endpoint untuk cek sesi aktif
+// Endpoint untuk cek sesi aktif
 exports.checkActiveSessions = async (req, res) => {
   try {
     const guruId = req.user.id;
-    const tanggalHariIni = new Date().toISOString().split("T")[0];
+
+    // Konversi ke WIB untuk mendapatkan tanggal yang benar
+    const nowUTC = new Date();
+    const WIB_OFFSET = 7 * 60;
+    const nowWIB = new Date(nowUTC.getTime() + WIB_OFFSET * 60 * 1000);
+
+    const year = nowWIB.getUTCFullYear();
+    const month = String(nowWIB.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(nowWIB.getUTCDate()).padStart(2, "0");
+    const tanggalHariIni = `${year}-${month}-${day}`;
 
     const sesiAktif = await SesiPresensi.find({
       dibuatOleh: guruId,
       tanggal: tanggalHariIni,
       isActive: true,
-      expiredAt: { $gt: new Date() },
+      expiredAt: { $gt: nowUTC },
     }).populate({
       path: "jadwal",
       populate: [
