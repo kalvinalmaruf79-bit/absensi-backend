@@ -378,6 +378,14 @@ exports.createManualAbsensi = async (req, res) => {
       });
     }
 
+    // Validasi keterangan
+    if (!["hadir", "izin", "sakit", "alpa"].includes(keterangan)) {
+      return res.status(400).json({
+        message:
+          "Keterangan tidak valid. Pilih: hadir, izin, sakit, atau alpa.",
+      });
+    }
+
     // Validasi guru mengajar di jadwal ini
     const jadwal = await Jadwal.findOne({
       _id: jadwalId,
@@ -391,20 +399,40 @@ exports.createManualAbsensi = async (req, res) => {
       });
     }
 
-    // Cek apakah sudah ada record
-    const existing = await Absensi.findOne({
+    // Validasi siswa ada di kelas
+    const siswa = await User.findOne({
+      _id: siswaId,
+      kelas: jadwal.kelas,
+      role: "siswa",
+      isActive: true,
+    });
+
+    if (!siswa) {
+      return res.status(404).json({
+        message: "Siswa tidak ditemukan di kelas ini.",
+      });
+    }
+
+    // PERUBAHAN: Gunakan upsert (update or insert)
+    const existingAbsensi = await Absensi.findOne({
       siswa: siswaId,
       jadwal: jadwalId,
       tanggal: tanggal,
     });
 
-    if (existing) {
-      return res.status(400).json({
-        message: "Record absensi sudah ada untuk siswa ini.",
+    if (existingAbsensi) {
+      // Update existing record
+      existingAbsensi.keterangan = keterangan;
+      existingAbsensi.isManual = true;
+      await existingAbsensi.save();
+
+      return res.status(200).json({
+        message: "Absensi berhasil diperbarui.",
+        data: existingAbsensi,
       });
     }
 
-    // Buat record absensi manual
+    // Buat record baru
     const absensi = new Absensi({
       siswa: siswaId,
       jadwal: jadwalId,
@@ -420,9 +448,10 @@ exports.createManualAbsensi = async (req, res) => {
       data: absensi,
     });
   } catch (error) {
-    console.error("Error create manual absensi:", error);
+    console.error("Error create/update manual absensi:", error);
     res.status(500).json({
-      message: "Gagal menambahkan absensi manual.",
+      message: "Gagal memproses absensi manual.",
+      error: error.message,
     });
   }
 };

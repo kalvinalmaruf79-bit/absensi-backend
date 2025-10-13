@@ -411,7 +411,7 @@ exports.getAbsensiBySesi = async (req, res) => {
       });
     }
 
-    // Ambil SEMUA siswa di kelas
+    // Ambil SEMUA siswa di kelas (ALWAYS show all students)
     const semuaSiswa = await User.find({
       kelas: kelasId,
       role: "siswa",
@@ -419,6 +419,11 @@ exports.getAbsensiBySesi = async (req, res) => {
     })
       .select("name identifier")
       .sort({ name: 1 });
+
+    // PERUBAHAN: Jika tidak ada siswa di kelas, kembalikan array kosong
+    if (semuaSiswa.length === 0) {
+      return res.json([]);
+    }
 
     // Ambil data absensi yang sudah ada untuk tanggal ini
     const absensiRecords = await Absensi.find({
@@ -430,17 +435,18 @@ exports.getAbsensiBySesi = async (req, res) => {
     const absensiMap = new Map();
     absensiRecords.forEach((record) => {
       absensiMap.set(record.siswa.toString(), {
-        _id: record._id, // Tambahkan ID untuk update
+        _id: record._id,
         keterangan: record.keterangan,
         waktuMasuk: record.waktuMasuk,
       });
     });
 
     // Gabungkan data siswa dengan status absensi
+    // DEFAULT: semua siswa yang belum absen akan ditampilkan sebagai "alpa"
     const daftarHadir = semuaSiswa.map((siswa) => {
       const absensiData = absensiMap.get(siswa._id.toString());
       return {
-        _id: absensiData?._id || null, // ID absensi (null jika belum ada)
+        _id: absensiData?._id || null,
         siswa: {
           _id: siswa._id,
           name: siswa.name,
