@@ -37,6 +37,42 @@ exports.generateQR = async (req, res) => {
       });
     }
 
+    // --- VALIDASI WAKTU DAN HARI PEMBUATAN SESI ---
+    const now = new Date();
+    const hariIni = [
+      "minggu",
+      "senin",
+      "selasa",
+      "rabu",
+      "kamis",
+      "jumat",
+      "sabtu",
+    ][now.getDay()];
+
+    // 1. Cek apakah hari ini sesuai dengan jadwal
+    if (jadwal.hari !== hariIni) {
+      return res.status(403).json({
+        message: `Jadwal ini hanya untuk hari ${jadwal.hari}. Anda tidak dapat membuat sesi hari ini.`,
+      });
+    }
+
+    // 2. Cek apakah waktu saat ini berada dalam rentang jam pelajaran
+    const [startHour, startMinute] = jadwal.jamMulai.split(":").map(Number);
+    const [endHour, endMinute] = jadwal.jamSelesai.split(":").map(Number);
+
+    const startTime = new Date(now);
+    startTime.setHours(startHour, startMinute, 0, 0);
+
+    const endTime = new Date(now);
+    endTime.setHours(endHour, endMinute, 0, 0);
+
+    if (now < startTime || now > endTime) {
+      return res.status(403).json({
+        message: `Sesi presensi hanya dapat dibuat selama jam pelajaran berlangsung (${jadwal.jamMulai} - ${jadwal.jamSelesai}).`,
+      });
+    }
+    // --- AKHIR DARI VALIDASI WAKTU ---
+
     const kodeUnik = Math.random().toString(36).substring(2, 8).toUpperCase();
     const tanggalHariIni = new Date().toISOString().split("T")[0];
 
