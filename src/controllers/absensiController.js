@@ -25,6 +25,7 @@ const haversineDistance = (coords1, coords2) => {
   return R * c;
 };
 
+// ========== CHECK-IN VIA QR CODE / TOKEN ==========
 exports.checkIn = async (req, res) => {
   try {
     const { kodeSesi, latitude, longitude } = req.body;
@@ -36,6 +37,7 @@ exports.checkIn = async (req, res) => {
       });
     }
 
+    // Cari sesi presensi berdasarkan kode unik
     const sesiPresensi = await SesiPresensi.findOne({
       kodeUnik: kodeSesi.toUpperCase(),
       isActive: true,
@@ -48,6 +50,7 @@ exports.checkIn = async (req, res) => {
       });
     }
 
+    // Validasi siswa terdaftar di kelas yang sesuai
     const siswa = await User.findById(siswaId);
     if (
       !siswa ||
@@ -59,6 +62,7 @@ exports.checkIn = async (req, res) => {
       });
     }
 
+    // Cek presensi hari ini
     const tanggalHariIni = new Date().toISOString().split("T")[0];
     const existingAbsensi = await Absensi.findOne({
       siswa: siswaId,
@@ -66,7 +70,7 @@ exports.checkIn = async (req, res) => {
       tanggal: tanggalHariIni,
     });
 
-    // --- PERUBAHAN UTAMA: Validasi konflik absensi ---
+    // Validasi konflik absensi
     if (existingAbsensi) {
       if (
         existingAbsensi.keterangan === "izin" ||
@@ -81,8 +85,8 @@ exports.checkIn = async (req, res) => {
           "Anda sudah melakukan presensi untuk mata pelajaran ini hari ini.",
       });
     }
-    // --------------------------------------------------
 
+    // Validasi jarak (hanya di production)
     const jarak = haversineDistance(
       { latitude, longitude },
       sesiPresensi.lokasi
@@ -96,12 +100,14 @@ exports.checkIn = async (req, res) => {
       });
     }
 
+    // Buat record absensi
     const absensi = new Absensi({
       siswa: siswaId,
       sesiPresensi: sesiPresensi._id,
       jadwal: sesiPresensi.jadwal._id,
       lokasiSiswa: { latitude, longitude },
       tanggal: tanggalHariIni,
+      keterangan: "hadir",
     });
 
     await absensi.save();
@@ -117,6 +123,91 @@ exports.checkIn = async (req, res) => {
   }
 };
 
+// ========== CHECK-IN VIA MANUAL CODE (Untuk siswa tanpa support QR) ==========
+exports.checkInWithCode = async (req, res) => {
+  try {
+    const { kodeAbsen } = req.body;
+    const siswaId = req.user.id;
+
+    if (!kodeAbsen) {
+      return res.status(400).json({
+        message: "Kode absen wajib diisi!",
+      });
+    }
+
+    // Cari sesi presensi berdasarkan kode unik (sama seperti QR code)
+    const sesiPresensi = await SesiPresensi.findOne({
+      kodeUnik: kodeAbsen.toUpperCase(),
+      isActive: true,
+      expiredAt: { $gt: new Date() },
+    }).populate("jadwal");
+
+    if (!sesiPresensi) {
+      return res.status(400).json({
+        message: "Kode absen tidak valid atau sudah kedaluwarsa!",
+      });
+    }
+
+    // Validasi siswa terdaftar di kelas yang sesuai
+    const siswa = await User.findById(siswaId);
+    if (
+      !siswa ||
+      siswa.role !== "siswa" ||
+      !siswa.kelas.equals(sesiPresensi.jadwal.kelas)
+    ) {
+      return res.status(403).json({
+        message: "Anda tidak terdaftar di kelas yang sesuai dengan sesi ini.",
+      });
+    }
+
+    // Cek presensi hari ini
+    const tanggalHariIni = new Date().toISOString().split("T")[0];
+    const existingAbsensi = await Absensi.findOne({
+      siswa: siswaId,
+      jadwal: sesiPresensi.jadwal._id,
+      tanggal: tanggalHariIni,
+    });
+
+    // Validasi konflik absensi
+    if (existingAbsensi) {
+      if (
+        existingAbsensi.keterangan === "izin" ||
+        existingAbsensi.keterangan === "sakit"
+      ) {
+        return res.status(400).json({
+          message: `Anda sudah tercatat '${existingAbsensi.keterangan}' untuk pelajaran ini. Tidak dapat melakukan presensi.`,
+        });
+      }
+      return res.status(400).json({
+        message:
+          "Anda sudah melakukan presensi untuk mata pelajaran ini hari ini.",
+      });
+    }
+
+    // Buat record absensi (TANPA lokasi, karena tidak ada GPS)
+    const absensi = new Absensi({
+      siswa: siswaId,
+      sesiPresensi: sesiPresensi._id,
+      jadwal: sesiPresensi.jadwal._id,
+      tanggal: tanggalHariIni,
+      keterangan: "hadir",
+      // lokasiSiswa tidak diisi karena siswa tidak scan QR
+    });
+
+    await absensi.save();
+
+    res.status(200).json({
+      message: "Presensi berhasil!",
+    });
+  } catch (error) {
+    console.error("Error during check-in with code:", error);
+    res
+      .status(500)
+      .json({ message: "Terjadi kesalahan saat proses check-in." });
+  }
+};
+
+// ========== GET RIWAYAT ABSENSI ==========
 exports.getRiwayatAbsensi = async (req, res) => {
   try {
     const { tanggal, kelasId, mataPelajaranId } = req.query;
@@ -166,6 +257,7 @@ exports.getRiwayatAbsensi = async (req, res) => {
   }
 };
 
+// ========== UPDATE KETERANGAN PRESENSI ==========
 exports.updateKeteranganPresensi = async (req, res) => {
   try {
     const { id } = req.params;
@@ -200,6 +292,7 @@ exports.updateKeteranganPresensi = async (req, res) => {
   }
 };
 
+// ========== EXPORT ABSENSI KE EXCEL ==========
 exports.exportAbsensi = async (req, res) => {
   try {
     const { tanggal, kelasId, mataPelajaranId } = req.query;
@@ -274,6 +367,7 @@ exports.exportAbsensi = async (req, res) => {
   }
 };
 
+// ========== CREATE MANUAL ABSENSI (Guru/Admin) ==========
 exports.createManualAbsensi = async (req, res) => {
   try {
     const { siswaId, jadwalId, keterangan, tanggal } = req.body;
@@ -316,7 +410,7 @@ exports.createManualAbsensi = async (req, res) => {
       jadwal: jadwalId,
       tanggal: tanggal,
       keterangan: keterangan,
-      isManual: true, // Flag untuk manual entry
+      isManual: true,
     });
 
     await absensi.save();
