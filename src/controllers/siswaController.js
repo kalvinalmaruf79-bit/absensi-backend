@@ -787,3 +787,163 @@ exports.getDetailPresensi = async (req, res) => {
     });
   }
 };
+
+// GET /api/siswa/notifikasi/:id
+// Mengambil detail notifikasi berdasarkan ID
+exports.getDetailNotifikasi = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const siswaId = req.user.id;
+
+    // Cari notifikasi berdasarkan ID dan pastikan milik siswa yang login
+    const notifikasi = await Notifikasi.findOne({
+      _id: id,
+      penerima: siswaId,
+    });
+
+    if (!notifikasi) {
+      return res.status(404).json({
+        message: "Notifikasi tidak ditemukan.",
+      });
+    }
+
+    // Jika ada resourceId, populate data terkait berdasarkan tipe
+    let detailResource = null;
+
+    if (notifikasi.resourceId) {
+      switch (notifikasi.tipe) {
+        case "tugas_baru":
+        case "tugas_diubah":
+        case "tugas_dihapus":
+          // Populate detail tugas
+          const tugas = await Tugas.findById(notifikasi.resourceId)
+            .populate("mataPelajaran", "nama kode")
+            .populate("guru", "name identifier")
+            .populate("kelas", "nama tingkat jurusan");
+
+          if (tugas) {
+            detailResource = {
+              type: "tugas",
+              data: {
+                _id: tugas._id,
+                judul: tugas.judul,
+                deskripsi: tugas.deskripsi,
+                deadline: tugas.deadline,
+                mataPelajaran: tugas.mataPelajaran,
+                guru: tugas.guru,
+                kelas: tugas.kelas,
+                semester: tugas.semester,
+                tahunAjaran: tugas.tahunAjaran,
+              },
+            };
+          }
+          break;
+
+        case "nilai_baru":
+          // Populate detail nilai
+          const nilai = await Nilai.findById(notifikasi.resourceId)
+            .populate("mataPelajaran", "nama kode")
+            .populate("guru", "name")
+            .populate("kelas", "nama tingkat jurusan")
+            .populate("tugas", "judul");
+
+          if (nilai) {
+            detailResource = {
+              type: "nilai",
+              data: {
+                _id: nilai._id,
+                nilai: nilai.nilai,
+                jenisPenilaian: nilai.jenisPenilaian,
+                mataPelajaran: nilai.mataPelajaran,
+                guru: nilai.guru,
+                kelas: nilai.kelas,
+                tugas: nilai.tugas,
+                tanggalPenilaian: nilai.tanggalPenilaian,
+                catatan: nilai.catatan,
+              },
+            };
+          }
+          break;
+
+        case "pengumuman_baru":
+          // Populate detail pengumuman
+          const pengumuman = await Pengumuman.findById(
+            notifikasi.resourceId
+          ).populate("pembuat", "name identifier");
+
+          if (pengumuman) {
+            detailResource = {
+              type: "pengumuman",
+              data: {
+                _id: pengumuman._id,
+                judul: pengumuman.judul,
+                konten: pengumuman.konten,
+                kategori: pengumuman.kategori,
+                prioritas: pengumuman.prioritas,
+                targetRole: pengumuman.targetRole,
+                targetKelas: pengumuman.targetKelas,
+                pembuat: pengumuman.pembuat,
+                tanggalPublikasi: pengumuman.tanggalPublikasi,
+                lampiran: pengumuman.lampiran,
+              },
+            };
+          }
+          break;
+
+        case "pengingat_presensi":
+        case "presensi_alpa":
+          // Populate detail jadwal terkait
+          const jadwal = await Jadwal.findById(notifikasi.resourceId)
+            .populate("mataPelajaran", "nama kode")
+            .populate("guru", "name")
+            .populate("kelas", "nama tingkat jurusan");
+
+          if (jadwal) {
+            detailResource = {
+              type: "jadwal",
+              data: {
+                _id: jadwal._id,
+                hari: jadwal.hari,
+                jamMulai: jadwal.jamMulai,
+                jamSelesai: jadwal.jamSelesai,
+                mataPelajaran: jadwal.mataPelajaran,
+                guru: jadwal.guru,
+                kelas: jadwal.kelas,
+              },
+            };
+          }
+          break;
+
+        default:
+          break;
+      }
+    }
+
+    // Tandai sebagai sudah dibaca jika belum
+    if (!notifikasi.isRead) {
+      notifikasi.isRead = true;
+      await notifikasi.save();
+    }
+
+    // Response
+    res.json({
+      notifikasi: {
+        _id: notifikasi._id,
+        tipe: notifikasi.tipe,
+        judul: notifikasi.judul,
+        pesan: notifikasi.pesan,
+        resourceId: notifikasi.resourceId,
+        isRead: notifikasi.isRead,
+        createdAt: notifikasi.createdAt,
+        updatedAt: notifikasi.updatedAt,
+      },
+      detailResource,
+    });
+  } catch (error) {
+    console.error("Error getting detail notifikasi:", error);
+    res.status(500).json({
+      message: "Gagal mengambil detail notifikasi.",
+      error: error.message,
+    });
+  }
+};

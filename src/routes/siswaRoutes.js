@@ -20,6 +20,7 @@ const {
   getStatistikPresensi,
   getPresensiHariIni,
   getDetailPresensi,
+  getDetailNotifikasi,
 } = require("../controllers/siswaController");
 
 const {
@@ -55,8 +56,12 @@ router.get("/presensi", getRiwayatPresensi); // Route utama untuk list
 // ========== LAINNYA ==========
 router.get("/teman-sekelas", getTemanSekelas);
 router.get("/mata-pelajaran", getMataPelajaranSiswa);
-router.get("/notifikasi", getNotifikasi);
 router.patch("/notifikasi/:id/read", markNotifikasiAsRead);
+
+router.get("/notifikasi/:id", getDetailNotifikasi); // BARU
+
+router.get("/notifikasi", getNotifikasi);
+
 router.get("/histori-aktivitas", getHistoriAktivitas);
 
 module.exports = router;
