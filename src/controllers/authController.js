@@ -183,7 +183,7 @@ exports.forgotPassword = async (req, res) => {
     // Kirim email dengan kode
     const templatePath = path.join(
       __dirname,
-      "../templates/resetPasswordCode.html"
+      "../templates/resetPassword.html"
     );
     let htmlTemplate = fs.readFileSync(templatePath, "utf-8");
     htmlTemplate = htmlTemplate.replace("{{resetCode}}", resetCode);
@@ -223,11 +223,9 @@ exports.verifyResetCode = async (req, res) => {
     });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({
-          message: "Kode verifikasi tidak valid atau sudah kedaluwarsa.",
-        });
+      return res.status(400).json({
+        message: "Kode verifikasi tidak valid atau sudah kedaluwarsa.",
+      });
     }
 
     // Generate temporary token untuk proses reset password
@@ -268,11 +266,9 @@ exports.resetPassword = async (req, res) => {
     });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({
-          message: "Sesi reset password tidak valid atau sudah kedaluwarsa.",
-        });
+      return res.status(400).json({
+        message: "Sesi reset password tidak valid atau sudah kedaluwarsa.",
+      });
     }
 
     user.password = await bcrypt.hash(password, 10);
