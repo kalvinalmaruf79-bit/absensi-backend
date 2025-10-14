@@ -12,18 +12,60 @@ const path = require("path");
 exports.registerDevice = async (req, res) => {
   try {
     const { deviceToken } = req.body;
-    if (!deviceToken) {
+
+    // Validasi device token
+    if (!deviceToken || deviceToken.trim() === "") {
       return res.status(400).json({ message: "Device token wajib diisi." });
     }
 
     const userId = req.user.id;
-    await User.findByIdAndUpdate(userId, {
-      $addToSet: { deviceTokens: deviceToken },
-    });
 
-    res.json({ message: "Perangkat berhasil didaftarkan." });
+    // Cek apakah user ada
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User tidak ditemukan." });
+    }
+
+    // Cek apakah token sudah terdaftar
+    const tokenExists =
+      user.deviceTokens && user.deviceTokens.includes(deviceToken);
+
+    if (!tokenExists) {
+      // Tambahkan token baru
+      await User.findByIdAndUpdate(userId, {
+        $addToSet: { deviceTokens: deviceToken },
+      });
+
+      console.log(
+        `✅ Device token berhasil didaftarkan untuk user ${userId}: ${deviceToken}`
+      );
+
+      // Log ke ActivityLog
+      ActivityLog.create({
+        user: userId,
+        action: "REGISTER_DEVICE",
+        details: `Device token didaftarkan: ${deviceToken.substring(0, 10)}...`,
+      }).catch((err) =>
+        console.error("Gagal mencatat log register device:", err)
+      );
+
+      res.json({
+        message: "Perangkat berhasil didaftarkan.",
+        deviceToken: deviceToken,
+      });
+    } else {
+      console.log(`ℹ️ Device token sudah terdaftar untuk user ${userId}`);
+      res.json({
+        message: "Perangkat sudah terdaftar sebelumnya.",
+        deviceToken: deviceToken,
+      });
+    }
   } catch (error) {
-    res.status(500).json({ message: "Gagal mendaftarkan perangkat." });
+    console.error("❌ Error registerDevice:", error);
+    res.status(500).json({
+      message: "Gagal mendaftarkan perangkat.",
+      error: error.message,
+    });
   }
 };
 
