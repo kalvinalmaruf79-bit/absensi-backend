@@ -161,6 +161,7 @@ exports.generateQR = async (req, res) => {
       return res.status(200).json({
         message: "Sesi presensi sudah aktif.",
         isExisting: true,
+        sesiId: existingSesi._id,
         qrCode: qrImageData,
         kodeUnik: existingSesi.kodeUnik,
         expiredAt: existingSesi.expiredAt,
@@ -220,6 +221,7 @@ exports.generateQR = async (req, res) => {
     res.status(201).json({
       message: "QR Code berhasil dibuat.",
       isExisting: false,
+      sesiId: sesiPresensi._id,
       qrCode: qrImageData,
       kodeUnik,
       expiredAt,
