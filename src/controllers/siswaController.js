@@ -559,3 +559,231 @@ exports.getMataPelajaranSiswa = async (req, res) => {
     });
   }
 };
+
+// GET /api/siswa/presensi
+// Mengambil riwayat presensi siswa dengan pagination
+exports.getRiwayatPresensi = async (req, res) => {
+  try {
+    const siswaId = req.user.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 15;
+    const skip = (page - 1) * limit;
+
+    // Query absensi milik siswa ini saja
+    const query = { siswa: siswaId };
+
+    // Total documents
+    const totalDocs = await Absensi.countDocuments(query);
+
+    // Get data dengan populate
+    const absensiList = await Absensi.find(query)
+      .populate({
+        path: "jadwal",
+        populate: [
+          { path: "kelas", select: "nama tingkat jurusan" },
+          { path: "mataPelajaran", select: "nama kode" },
+          { path: "guru", select: "name" },
+        ],
+      })
+      .populate("siswa", "name identifier")
+      .populate("sesiPresensi", "kodeUnik expiredAt")
+      .populate("pengajuanAbsensi", "alasan status")
+      .sort({ tanggal: -1, waktuMasuk: -1 }) // Urutkan dari terbaru
+      .limit(limit)
+      .skip(skip);
+
+    // Hitung total pages
+    const totalPages = Math.ceil(totalDocs / limit);
+    const hasNextPage = page < totalPages;
+    const hasPrevPage = page > 1;
+
+    // Response dengan format pagination
+    res.status(200).json({
+      docs: absensiList,
+      totalDocs,
+      limit,
+      totalPages,
+      page,
+      pagingCounter: skip + 1,
+      hasNextPage,
+      hasPrevPage,
+      prevPage: hasPrevPage ? page - 1 : null,
+      nextPage: hasNextPage ? page + 1 : null,
+    });
+  } catch (error) {
+    console.error("Error getting riwayat presensi siswa:", error);
+    res.status(500).json({
+      message: "Gagal mengambil riwayat presensi",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/siswa/presensi/statistik
+// Mengambil statistik presensi siswa
+exports.getStatistikPresensi = async (req, res) => {
+  try {
+    const siswaId = req.user.id;
+    const { tahunAjaran, semester } = req.query;
+
+    // Build query
+    const matchQuery = { siswa: new mongoose.Types.ObjectId(siswaId) };
+
+    if (tahunAjaran || semester) {
+      // Jika filter tahun/semester, join dengan jadwal
+      const jadwalFilter = {};
+      if (tahunAjaran) jadwalFilter.tahunAjaran = tahunAjaran;
+      if (semester) jadwalFilter.semester = semester;
+
+      const jadwalIds = await Jadwal.find(jadwalFilter).distinct("_id");
+      matchQuery.jadwal = { $in: jadwalIds };
+    }
+
+    // Statistik per status
+    const statistik = await Absensi.aggregate([
+      { $match: matchQuery },
+      {
+        $group: {
+          _id: "$keterangan",
+          total: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // Format response
+    const result = {
+      hadir: 0,
+      izin: 0,
+      sakit: 0,
+      alpa: 0,
+    };
+
+    statistik.forEach((stat) => {
+      if (stat._id in result) {
+        result[stat._id] = stat.total;
+      }
+    });
+
+    // Total keseluruhan
+    result.total = Object.values(result).reduce((a, b) => a + b, 0);
+
+    // Persentase kehadiran
+    if (result.total > 0) {
+      result.persentaseHadir = parseFloat(
+        ((result.hadir / result.total) * 100).toFixed(1)
+      );
+    } else {
+      result.persentaseHadir = 0;
+    }
+
+    // Tambahan: Statistik per bulan (3 bulan terakhir)
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+    const perBulan = await Absensi.aggregate([
+      {
+        $match: {
+          siswa: new mongoose.Types.ObjectId(siswaId),
+          createdAt: { $gte: threeMonthsAgo },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            keterangan: "$keterangan",
+          },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $sort: { "_id.year": 1, "_id.month": 1 },
+      },
+    ]);
+
+    result.perBulan = perBulan;
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("Error getting statistik presensi:", error);
+    res.status(500).json({
+      message: "Gagal mengambil statistik presensi",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/siswa/presensi/hari-ini
+// Mengambil presensi hari ini saja
+exports.getPresensiHariIni = async (req, res) => {
+  try {
+    const siswaId = req.user.id;
+    const today = new Date().toISOString().split("T")[0];
+
+    const absensiHariIni = await Absensi.find({
+      siswa: siswaId,
+      tanggal: today,
+    })
+      .populate({
+        path: "jadwal",
+        populate: [
+          { path: "kelas", select: "nama" },
+          { path: "mataPelajaran", select: "nama kode" },
+          { path: "guru", select: "name" },
+        ],
+      })
+      .populate("sesiPresensi", "kodeUnik")
+      .sort({ waktuMasuk: -1 });
+
+    res.status(200).json(absensiHariIni);
+  } catch (error) {
+    console.error("Error getting presensi hari ini:", error);
+    res.status(500).json({
+      message: "Gagal mengambil presensi hari ini",
+      error: error.message,
+    });
+  }
+};
+
+// GET /api/siswa/presensi/:id
+// Mengambil detail presensi berdasarkan ID
+exports.getDetailPresensi = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const siswaId = req.user.id;
+
+    const absensi = await Absensi.findOne({
+      _id: id,
+      siswa: siswaId, // Pastikan hanya bisa akses presensi sendiri
+    })
+      .populate({
+        path: "jadwal",
+        populate: [
+          { path: "kelas", select: "nama tingkat jurusan" },
+          { path: "mataPelajaran", select: "nama kode" },
+          { path: "guru", select: "name identifier" },
+        ],
+      })
+      .populate("siswa", "name identifier")
+      .populate("sesiPresensi", "kodeUnik lokasi expiredAt createdAt")
+      .populate({
+        path: "pengajuanAbsensi",
+        select: "alasan status fileBukti tanggal",
+      });
+
+    if (!absensi) {
+      return res.status(404).json({
+        message: "Data presensi tidak ditemukan",
+      });
+    }
+
+    res.status(200).json(absensi);
+  } catch (error) {
+    console.error("Error getting detail presensi:", error);
+    res.status(500).json({
+      message: "Gagal mengambil detail presensi",
+      error: error.message,
+    });
+  }
+};

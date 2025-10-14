@@ -15,6 +15,11 @@ const {
   getMataPelajaranSiswa,
   getStatistikNilai,
   getRingkasanNilai,
+  // TAMBAHKAN import fungsi presensi
+  getRiwayatPresensi,
+  getStatistikPresensi,
+  getPresensiHariIni,
+  getDetailPresensi,
 } = require("../controllers/siswaController");
 
 const {
@@ -26,21 +31,32 @@ const {
 // Middleware ini akan melindungi semua rute siswa
 router.use(authMiddleware, verifySiswa, checkUserActive);
 
-// Rute-rute utama sesuai dengan Flutter Service Anda
+// ========== DASHBOARD & JADWAL ==========
 router.get("/dashboard", getDashboard);
 router.get("/jadwal", getJadwalSiswa);
 router.get("/jadwal/mendatang", getJadwalMendatang);
-router.get("/tugas/mendatang", getTugasMendatang);
-router.get("/nilai/statistik", getStatistikNilai); // Harus sebelum /nilai/:id
-router.get("/nilai/ringkasan", getRingkasanNilai); // Harus sebelum /nilai/:id
 
+// ========== TUGAS ==========
+router.get("/tugas/mendatang", getTugasMendatang);
+
+// ========== NILAI ==========
+// PENTING: Route spesifik harus di atas route dengan parameter
+router.get("/nilai/statistik", getStatistikNilai);
+router.get("/nilai/ringkasan", getRingkasanNilai);
 router.get("/nilai", getNilaiSiswa);
+
+// ========== PRESENSI (BARU) ==========
+// Route spesifik harus di atas route dengan parameter
+router.get("/presensi/statistik", getStatistikPresensi);
+router.get("/presensi/hari-ini", getPresensiHariIni);
+router.get("/presensi/:id", getDetailPresensi);
+router.get("/presensi", getRiwayatPresensi); // Route utama untuk list
+
+// ========== LAINNYA ==========
 router.get("/teman-sekelas", getTemanSekelas);
+router.get("/mata-pelajaran", getMataPelajaranSiswa);
 router.get("/notifikasi", getNotifikasi);
 router.patch("/notifikasi/:id/read", markNotifikasiAsRead);
 router.get("/histori-aktivitas", getHistoriAktivitas);
-
-// Route baru untuk mata pelajaran siswa
-router.get("/mata-pelajaran", getMataPelajaranSiswa);
 
 module.exports = router;
