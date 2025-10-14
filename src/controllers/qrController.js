@@ -274,3 +274,93 @@ exports.checkActiveSessions = async (req, res) => {
     });
   }
 };
+
+// Endpoint untuk mengakhiri sesi presensi
+exports.endSession = async (req, res) => {
+  try {
+    const { sesiId } = req.params;
+    const guruId = req.user.id;
+
+    // Cari sesi yang aktif
+    const sesiPresensi = await SesiPresensi.findOne({
+      _id: sesiId,
+      dibuatOleh: guruId,
+      isActive: true,
+    }).populate({
+      path: "jadwal",
+      populate: [
+        { path: "kelas", select: "nama" },
+        { path: "mataPelajaran", select: "nama" },
+      ],
+    });
+
+    if (!sesiPresensi) {
+      return res.status(404).json({
+        message: "Sesi presensi tidak ditemukan atau sudah diakhiri.",
+      });
+    }
+
+    // Update sesi menjadi tidak aktif
+    sesiPresensi.isActive = false;
+    sesiPresensi.expiredAt = new Date(); // Set expired ke waktu sekarang
+    await sesiPresensi.save();
+
+    res.status(200).json({
+      message: "Sesi presensi berhasil diakhiri.",
+      data: {
+        sesiId: sesiPresensi._id,
+        kelas: sesiPresensi.jadwal.kelas.nama,
+        mataPelajaran: sesiPresensi.jadwal.mataPelajaran.nama,
+        tanggal: sesiPresensi.tanggal,
+      },
+    });
+  } catch (error) {
+    console.error("Error ending session:", error);
+    res.status(500).json({
+      message: "Gagal mengakhiri sesi presensi.",
+      error: error.message,
+    });
+  }
+};
+
+// Endpoint untuk mengakhiri semua sesi aktif guru (opsional)
+exports.endAllActiveSessions = async (req, res) => {
+  try {
+    const guruId = req.user.id;
+
+    const nowUTC = new Date();
+    const WIB_OFFSET = 7 * 60;
+    const nowWIB = new Date(nowUTC.getTime() + WIB_OFFSET * 60 * 1000);
+
+    const year = nowWIB.getUTCFullYear();
+    const month = String(nowWIB.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(nowWIB.getUTCDate()).padStart(2, "0");
+    const tanggalHariIni = `${year}-${month}-${day}`;
+
+    // Update semua sesi aktif guru hari ini
+    const result = await SesiPresensi.updateMany(
+      {
+        dibuatOleh: guruId,
+        tanggal: tanggalHariIni,
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+          expiredAt: nowUTC,
+        },
+      }
+    );
+
+    res.status(200).json({
+      message: `${result.modifiedCount} sesi presensi berhasil diakhiri.`,
+      count: result.modifiedCount,
+    });
+  } catch (error) {
+    console.error("Error ending all sessions:", error);
+    res.status(500).json({
+      message: "Gagal mengakhiri sesi presensi.",
+      error: error.message,
+    });
+  }
+};
