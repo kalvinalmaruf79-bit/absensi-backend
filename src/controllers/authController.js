@@ -1,6 +1,6 @@
 // controllers/authController.js
 const User = require("../models/User");
-const Kelas = require("../models/Kelas"); // TAMBAHKAN INI
+const Kelas = require("../models/Kelas");
 const ActivityLog = require("../models/ActivityLog");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -13,25 +13,20 @@ exports.registerDevice = async (req, res) => {
   try {
     const { deviceToken } = req.body;
 
-    // Validasi device token
     if (!deviceToken || deviceToken.trim() === "") {
       return res.status(400).json({ message: "Device token wajib diisi." });
     }
 
     const userId = req.user.id;
-
-    // Cek apakah user ada
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: "User tidak ditemukan." });
     }
 
-    // Cek apakah token sudah terdaftar
     const tokenExists =
       user.deviceTokens && user.deviceTokens.includes(deviceToken);
 
     if (!tokenExists) {
-      // Tambahkan token baru
       await User.findByIdAndUpdate(userId, {
         $addToSet: { deviceTokens: deviceToken },
       });
@@ -40,7 +35,6 @@ exports.registerDevice = async (req, res) => {
         `✅ Device token berhasil didaftarkan untuk user ${userId}: ${deviceToken}`
       );
 
-      // Log ke ActivityLog
       ActivityLog.create({
         user: userId,
         action: "REGISTER_DEVICE",
@@ -104,15 +98,13 @@ exports.loginUser = async (req, res) => {
     const userResponse = user.toObject();
     delete userResponse.password;
 
-    // --- PERUBAHAN UTAMA: Cek status Wali Kelas ---
     if (user.role === "guru") {
       const kelasWali = await Kelas.findOne({
         waliKelas: user._id,
         isActive: true,
       });
-      userResponse.isWaliKelas = !!kelasWali; // Tambahkan properti isWaliKelas
+      userResponse.isWaliKelas = !!kelasWali;
     }
-    // ---------------------------------------------
 
     res.json({
       message: "Login berhasil",
@@ -164,102 +156,128 @@ exports.changePassword = async (req, res) => {
   }
 };
 
+// ========== UPDATED: Forgot Password - Kirim Kode 6 Digit ==========
 exports.forgotPassword = async (req, res) => {
   const { email } = req.body;
   const user = await User.findOne({ email });
 
   if (!user) {
     return res.json({
-      message: "Jika email terdaftar, link reset akan dikirim.",
+      message: "Jika email terdaftar, kode verifikasi akan dikirim.",
     });
   }
 
   try {
-    const resetToken = crypto.randomBytes(20).toString("hex");
+    // Generate kode 6 digit
+    const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
 
+    // Hash kode dan simpan
     user.resetPasswordToken = crypto
       .createHash("sha256")
-      .update(resetToken)
+      .update(resetCode)
       .digest("hex");
-    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000;
+    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 menit
 
     await user.save({ validateBeforeSave: false });
 
-    const resetURL = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-
+    // Kirim email dengan kode
     const templatePath = path.join(
       __dirname,
-      "../templates/resetPassword.html"
+      "../templates/resetPasswordCode.html"
     );
     let htmlTemplate = fs.readFileSync(templatePath, "utf-8");
-    htmlTemplate = htmlTemplate.replace("{{resetURL}}", resetURL);
+    htmlTemplate = htmlTemplate.replace("{{resetCode}}", resetCode);
 
     await sendEmail({
       email: user.email,
-      subject: "Reset Password Akun Sistem Akademik",
+      subject: "Kode Verifikasi Reset Password",
       html: htmlTemplate,
     });
 
     res.json({
-      message: "Link reset password telah berhasil dikirim ke email Anda.",
+      message: "Kode verifikasi telah berhasil dikirim ke email Anda.",
     });
   } catch (error) {
     console.error("Error pada fungsi forgotPassword:", error);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
     await user.save({ validateBeforeSave: false });
-    res.status(500).json({ message: "Gagal mengirim email reset password." });
+    res.status(500).json({ message: "Gagal mengirim kode verifikasi." });
   }
 };
 
-exports.verifyResetToken = async (req, res) => {
+// ========== UPDATED: Verify Reset Code ==========
+exports.verifyResetCode = async (req, res) => {
   try {
-    const hashedToken = crypto
-      .createHash("sha256")
-      .update(req.params.token)
-      .digest("hex");
+    const { code } = req.body;
+
+    if (!code || code.length !== 6) {
+      return res.status(400).json({ message: "Kode verifikasi tidak valid." });
+    }
+
+    const hashedCode = crypto.createHash("sha256").update(code).digest("hex");
 
     const user = await User.findOne({
-      resetPasswordToken: hashedToken,
+      resetPasswordToken: hashedCode,
       resetPasswordExpire: { $gt: Date.now() },
     });
 
     if (!user) {
       return res
         .status(400)
-        .json({ message: "Token reset tidak valid atau sudah kedaluwarsa." });
+        .json({
+          message: "Kode verifikasi tidak valid atau sudah kedaluwarsa.",
+        });
     }
 
-    res.json({ message: "Token valid." });
+    // Generate temporary token untuk proses reset password
+    const tempToken = crypto.randomBytes(32).toString("hex");
+    user.resetPasswordTempToken = crypto
+      .createHash("sha256")
+      .update(tempToken)
+      .digest("hex");
+
+    await user.save({ validateBeforeSave: false });
+
+    res.json({
+      message: "Kode verifikasi valid.",
+      tempToken: tempToken,
+    });
   } catch (error) {
     res.status(500).json({ message: "Terjadi kesalahan pada server." });
   }
 };
 
+// ========== UPDATED: Reset Password dengan Temp Token ==========
 exports.resetPassword = async (req, res) => {
   try {
+    const { tempToken, password } = req.body;
+
+    if (!tempToken || !password) {
+      return res.status(400).json({ message: "Data tidak lengkap." });
+    }
+
     const hashedToken = crypto
       .createHash("sha256")
-      .update(req.params.token)
+      .update(tempToken)
       .digest("hex");
 
     const user = await User.findOne({
-      resetPasswordToken: hashedToken,
+      resetPasswordTempToken: hashedToken,
       resetPasswordExpire: { $gt: Date.now() },
     });
 
     if (!user) {
       return res
         .status(400)
-        .json({ message: "Token reset tidak valid atau sudah kedaluwarsa." });
+        .json({
+          message: "Sesi reset password tidak valid atau sudah kedaluwarsa.",
+        });
     }
 
-    if (!req.body.password) {
-      return res.status(400).json({ message: "Password baru wajib diisi." });
-    }
-
-    user.password = await bcrypt.hash(req.body.password, 10);
+    user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;
+    user.resetPasswordTempToken = undefined;
     user.resetPasswordExpire = undefined;
     user.isPasswordDefault = false;
     await user.save();

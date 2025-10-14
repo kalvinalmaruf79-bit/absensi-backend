@@ -7,9 +7,9 @@ const {
   getUserProfile,
   changePassword,
   forgotPassword,
-  verifyResetToken,
+  verifyResetCode,
   resetPassword,
-  registerDevice, // Impor fungsi baru
+  registerDevice,
 } = require("../controllers/authController");
 
 const {
@@ -20,21 +20,17 @@ const {
 // Rute Publik
 router.post("/login", loginUser);
 router.post("/forgot-password", forgotPassword);
-
-router.get("/reset-password/:token", verifyResetToken);
-router.put("/reset-password/:token", resetPassword);
+router.post("/verify-reset-code", verifyResetCode); // Verifikasi kode
+router.post("/reset-password", resetPassword); // Reset password dengan tempToken
 
 // Rute Terproteksi
 router.get("/profile", authMiddleware, checkUserActive, getUserProfile);
 router.put("/change-password", authMiddleware, checkUserActive, changePassword);
-
-// --- RUTE BARU UNTUK REGISTRASI PERANGKAT ---
 router.post(
   "/register-device",
   authMiddleware,
   checkUserActive,
   registerDevice
 );
-// ------------------------------------------
 
 module.exports = router;

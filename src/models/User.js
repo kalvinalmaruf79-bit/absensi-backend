@@ -55,6 +55,7 @@ const userSchema = new mongoose.Schema(
 
     // Untuk reset password
     resetPasswordToken: String,
+    resetPasswordTempToken: String,
     resetPasswordExpire: Date,
   },
   {
