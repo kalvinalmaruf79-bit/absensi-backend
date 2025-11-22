@@ -941,7 +941,8 @@ exports.processPromotion = [
         throw new Error("Kelas asal tidak ditemukan.");
       }
 
-      const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
+      // Generate tahun ajaran berikutnya untuk catatan sejarah jika diperlukan
+      // const nextTahunAjaran = generateNextTahunAjaran(tahunAjaran);
 
       for (const data of siswaData) {
         const { siswaId, status, toKelasId } = data;
@@ -952,6 +953,7 @@ exports.processPromotion = [
           continue;
         }
 
+        // 1. Arsipkan Kelas Lama ke Riwayat (Jika belum ada)
         const sudahAdaDiRiwayat = siswa.riwayatKelas.some(
           (riwayat) =>
             riwayat.kelas.equals(fromKelasId) &&
@@ -964,30 +966,28 @@ exports.processPromotion = [
             kelas: fromKelasId,
             tahunAjaran: tahunAjaran,
             semester: "genap",
+            notes: status === "Tinggal Kelas" ? "Tinggal Kelas" : undefined,
           });
         }
 
-        if (status === "Naik Kelas") {
+        // 2. Proses Pemindahan / Kelulusan
+        if (status === "Naik Kelas" || status === "Tinggal Kelas") {
+          // FIX: Validasi & Update Kelas Baru berlaku untuk KEDUANYA
           if (!toKelasId) {
             throw new Error(
-              `Kelas tujuan untuk siswa ${siswa.name} wajib diisi.`
+              `Kelas tujuan untuk siswa ${siswa.name} wajib diisi (Status: ${status}).`
             );
           }
 
+          // Pindahkan pointer kelas siswa ke kelas tahun ajaran baru
           siswa.kelas = toKelasId;
 
+          // Masukkan siswa ke array siswa di kelas tujuan
           await Kelas.findByIdAndUpdate(
             toKelasId,
             { $addToSet: { siswa: siswaId } },
             { session }
           );
-        } else if (status === "Tinggal Kelas") {
-          siswa.riwayatKelas.push({
-            kelas: fromKelasId,
-            tahunAjaran: nextTahunAjaran,
-            semester: "ganjil",
-            notes: "Tinggal Kelas",
-          });
         } else if (status === "Lulus") {
           siswa.kelas = null;
           siswa.isActive = false;
@@ -997,13 +997,13 @@ exports.processPromotion = [
         await siswa.save({ session });
       }
 
-      const siswaYangPindahAtauLulus = siswaData
-        .filter((s) => s.status === "Naik Kelas" || s.status === "Lulus")
-        .map((s) => s.siswaId);
+      // 3. Hapus siswa yang diproses dari array siswa di Kelas Lama
+      // (Baik yang naik, tinggal, atau lulus, semuanya 'keluar' dari objek kelas tahun lalu)
+      const siswaYangDiproses = siswaData.map((s) => s.siswaId);
 
       await Kelas.findByIdAndUpdate(
         fromKelasId,
-        { $pull: { siswa: { $in: siswaYangPindahAtauLulus } } },
+        { $pull: { siswa: { $in: siswaYangDiproses } } },
         { session }
       );
 
@@ -1020,6 +1020,7 @@ exports.processPromotion = [
       });
     } catch (error) {
       await session.abortTransaction();
+      console.error("Promotion Process Error:", error);
       res.status(500).json({
         success: false,
         message: "Terjadi kesalahan pada server saat proses kenaikan kelas.",
