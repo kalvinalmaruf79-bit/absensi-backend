@@ -17,6 +17,12 @@ const ExcelJS = require("exceljs");
 const fs = require("fs");
 const logActivity = require("../middleware/activityLogger");
 
+const generateNextTahunAjaran = (current) => {
+  if (!current) return "";
+  const [start, end] = current.split("/").map(Number);
+  return `${start + 1}/${end + 1}`;
+};
+
 // ============= DASHBOARD (IMPROVED) =============
 exports.getDashboard = async (req, res) => {
   try {
